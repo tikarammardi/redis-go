@@ -98,21 +98,13 @@ func handleCommand(command RespValue, conn net.Conn) {
 	fmt.Println("Parts Debug:", parts)
 	switch strings.ToUpper(cmd) {
 	case "PING":
-		if handlePing(parts, conn) {
-			return
-		}
+		handlePing(parts, conn)
 	case "ECHO":
-		if handleEcho(parts, conn) {
-			return
-		}
+		handleEcho(parts, conn)
 	case "SET":
-		if handleSet(parts, conn) {
-			return
-		}
+		handleSet(parts, conn)
 	case "GET":
-		if handleGet(parts, conn) {
-			return
-		}
+		handleGet(parts, conn)
 
 	default:
 		_, err := conn.Write([]byte("-ERR unknown command\r\n"))
