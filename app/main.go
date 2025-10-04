@@ -1,9 +1,11 @@
 package main
 
 import (
+	"bufio"
 	"fmt"
 	"net"
 	"os"
+	"strings"
 )
 
 // Ensures gofmt doesn't remove the "net" and "os" imports in stage 1 (feel free to remove this!)
@@ -41,16 +43,98 @@ func handleConnection(conn net.Conn) {
 			return
 		}
 		request := string(buf[:n])
-		if request == "*1\r\n$4\r\nPING\r\n" {
-			_, err := conn.Write([]byte("+PONG\r\n"))
+		r := bufio.NewReader(strings.NewReader(request))
+		command, err := ParseRESP(r)
+		fmt.Println("CommandType:", command.Type, "Value:", command.Value)
+		// CommandType: 4 Value: [{3 ECHO} {3 pear}]
+		if err != nil {
+			_, err := conn.Write([]byte("-ERR unknown command\r\n"))
 			if err != nil {
 				return
 			}
-		} else {
+			continue
+		}
+
+		if command.Type != ArrayType {
+			_, err := conn.Write([]byte("-ERR unknown command\r\n"))
+			if err != nil {
+				return
+			}
+			continue
+		}
+
+		parts, ok := command.Value.([]RespValue)
+		if !ok || len(parts) == 0 {
+			_, err := conn.Write([]byte("-ERR unknown command\r\n"))
+			if err != nil {
+				return
+			}
+			continue
+		}
+
+		cmd, ok := parts[0].Value.(string)
+		if !ok {
+			_, err := conn.Write([]byte("-ERR unknown command\r\n"))
+			if err != nil {
+				return
+			}
+			continue
+		}
+
+		switch strings.ToUpper(cmd) {
+		case "PING":
+			if len(parts) == 1 {
+				_, err := conn.Write([]byte("+PONG\r\n"))
+				if err != nil {
+					return
+				}
+			} else if len(parts) == 2 {
+				msg, ok := parts[1].Value.(string)
+				if !ok {
+					_, err := conn.Write([]byte("-ERR unknown command\r\n"))
+					if err != nil {
+						return
+					}
+					continue
+				}
+				response := fmt.Sprintf("+%s\r\n", msg)
+				_, err := conn.Write([]byte(response))
+				if err != nil {
+					return
+				}
+			} else {
+				_, err := conn.Write([]byte("-ERR unknown command\r\n"))
+				if err != nil {
+					return
+				}
+			}
+		case "ECHO":
+			if len(parts) != 2 {
+				_, err := conn.Write([]byte("-ERR unknown command\r\n"))
+				if err != nil {
+					return
+				}
+				continue
+			}
+			msg, ok := parts[1].Value.(string)
+			if !ok {
+				_, err := conn.Write([]byte("-ERR unknown command\r\n"))
+				if err != nil {
+					return
+				}
+				continue
+			}
+			response := fmt.Sprintf("$%d\r\n%s\r\n", len(msg), msg)
+			_, err := conn.Write([]byte(response))
+			if err != nil {
+				return
+			}
+		default:
 			_, err := conn.Write([]byte("-ERR unknown command\r\n"))
 			if err != nil {
 				return
 			}
 		}
+
 	}
 }
