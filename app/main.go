@@ -3,6 +3,7 @@ package main
 import (
 	"bufio"
 	"fmt"
+	"github.com/codecrafters-io/redis-starter-go/app/store"
 	"net"
 	"os"
 	"strings"
@@ -70,6 +71,7 @@ func handleConnection(conn net.Conn) {
 }
 
 func handleCommand(command RespValue, conn net.Conn) {
+
 	if command.Type != ArrayType {
 		_, err := conn.Write([]byte("-ERR unknown command\r\n"))
 		if err != nil {
@@ -124,7 +126,8 @@ func handleGet(parts []RespValue, conn net.Conn) bool {
 		return true
 	}
 	key := parts[1].Value.(string)
-	value, exists := getValue(key)
+	store := store.NewInMemoryStore()
+	value, exists := store.Get(key)
 	fmt.Println("Exists:", exists, "Value:", value)
 
 	if !exists {
@@ -233,7 +236,8 @@ func handleSet(parts []RespValue, conn net.Conn) bool {
 	expiry := expiryValue
 	key := parts[1].Value.(string)
 	value := parts[2].Value.(string)
-	setValue(key, value, expiry)
+	store := store.NewInMemoryStore()
+	store.Set(key, value, expiry)
 	fmt.Printf("Set key: %s to value: %s\n", key, value)
 	_, err := conn.Write([]byte("+OK\r\n"))
 	if err != nil {
