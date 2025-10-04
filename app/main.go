@@ -6,8 +6,6 @@ import (
 	"net"
 	"os"
 	"strings"
-
-	"github.com/codecrafters-io/redis-starter-go/app/store"
 )
 
 // Ensures gofmt doesn't remove the "net" and "os" imports in stage 1 (feel free to remove this!)
@@ -127,8 +125,8 @@ func handleGet(parts []RespValue, conn net.Conn) bool {
 		return true
 	}
 	key := parts[1].Value.(string)
-	st := store.NewInMemoryStore()
-	value, exists := st.Get(key)
+
+	value, exists := getValue(key)
 	fmt.Println("Exists:", exists, "Value:", value)
 
 	if !exists {
@@ -237,8 +235,7 @@ func handleSet(parts []RespValue, conn net.Conn) bool {
 	expiry := expiryValue
 	key := parts[1].Value.(string)
 	value := parts[2].Value.(string)
-	st := store.NewInMemoryStore()
-	st.Set(key, value, expiry)
+	setValue(key, value, expiry)
 	fmt.Printf("Set key: %s to value: %s\n", key, value)
 	_, err := conn.Write([]byte("+OK\r\n"))
 	if err != nil {
