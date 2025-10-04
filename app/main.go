@@ -145,16 +145,86 @@ func handleCommand(command RespValue, conn net.Conn) {
 			return
 		}
 	case "SET":
-		if len(parts) != 3 {
+		for i := range parts {
+			fmt.Printf("Part %d: Type %d, Value %v\n", i, parts[i].Type, parts[i].Value)
+		}
+		//if len(parts) != 3 {
+		//	_, err := conn.Write([]byte("-ERR unknown command\r\n"))
+		//	if err != nil {
+		//		return
+		//	}
+		//	return
+		//}
+		expiryCommands := []string{"EX", "PX"}
+		expiryValue := 0
+		for i := 3; i < len(parts); i += 2 {
+			partValue, ok := parts[i].Value.(string)
+			if !ok {
+				_, err := conn.Write([]byte("-ERR unknown command\r\n"))
+				if err != nil {
+					return
+				}
+				return
+			}
+			partValue = strings.ToUpper(partValue)
+			if !contains(expiryCommands, partValue) {
+				_, err := conn.Write([]byte("-ERR unknown command\r\n"))
+				if err != nil {
+					return
+				}
+				return
+			}
+			// if ex time will be in seconds and  px time will be in milliseconds
+
+			if i+1 >= len(parts) {
+				_, err := conn.Write([]byte("-ERR unknown command\r\n"))
+				if err != nil {
+					return
+				}
+				return
+			}
+			timeValue, ok := parts[i+1].Value.(string)
+			if !ok {
+				_, err := conn.Write([]byte("-ERR unknown command\r\n"))
+				if err != nil {
+					return
+				}
+				return
+			}
+			var timeInt int
+			_, err := fmt.Sscanf(timeValue, "%d", &timeInt)
+			if err != nil || timeInt <= 0 {
+				_, err := conn.Write([]byte("-ERR invalid expire time in set\r\n"))
+				if err != nil {
+					return
+				}
+				return
+			}
+			if partValue == "EX" {
+				expiryValue = timeInt * 1000 // convert to milliseconds
+			} else if partValue == "PX" {
+				expiryValue = timeInt
+			}
+		}
+
+		if len(parts) < 3 {
 			_, err := conn.Write([]byte("-ERR unknown command\r\n"))
 			if err != nil {
 				return
 			}
 			return
 		}
+		if parts[1].Type != BulkString || parts[2].Type != BulkString {
+			_, err := conn.Write([]byte("-ERR unknown command\r\n"))
+			if err != nil {
+				return
+			}
+			return
+		}
+		expiry := expiryValue
 		key := parts[1].Value.(string)
 		value := parts[2].Value.(string)
-		setValue(key, value)
+		setValue(key, value, expiry)
 		fmt.Printf("Set key: %s to value: %s\n", key, value)
 		_, err := conn.Write([]byte("+OK\r\n"))
 		if err != nil {
@@ -169,24 +239,24 @@ func handleCommand(command RespValue, conn net.Conn) {
 			return
 		}
 		key := parts[1].Value.(string)
-		value, exists := store[key]
+		value, exists := getValue(key)
 		fmt.Println("Exists:", exists, "Value:", value)
 
 		if !exists {
-			/*
-				_, err := conn.Write([]byte("$-1\r\n")) // Null bulk string - https://redis.io/docs/latest/develop/reference/protocol-spec/#null-bulk-strings
-				if err != nil {
-					return
-				}
-				return*/
 
-			value = "bar"
-			response := fmt.Sprintf("$%d\r\n%s\r\n", len(key), key)
-			_, err := conn.Write([]byte(response))
+			_, err := conn.Write([]byte("$-1\r\n")) // Null bulk string - https://redis.io/docs/latest/develop/reference/protocol-spec/#null-bulk-strings
 			if err != nil {
 				return
 			}
 			return
+
+			//value = "bar"
+			//response := fmt.Sprintf("$%d\r\n%s\r\n", len(key), key)
+			//_, err := conn.Write([]byte(response))
+			//if err != nil {
+			//	return
+			//}
+			//return
 		}
 
 		// if exist https://redis.io/docs/latest/develop/reference/protocol-spec/#bulk-strings
@@ -205,8 +275,11 @@ func handleCommand(command RespValue, conn net.Conn) {
 
 }
 
-var store = make(map[string]string)
-
-func setValue(key, value string) {
-	store[key] = value
+func contains(commands []string, value string) bool {
+	for _, cmd := range commands {
+		if cmd == value {
+			return true
+		}
+	}
+	return false
 }
