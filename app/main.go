@@ -95,7 +95,7 @@ func handleCommand(command RespValue, conn net.Conn) {
 		}
 		return
 	}
-
+	fmt.Println("Parts Debug:", parts)
 	switch strings.ToUpper(cmd) {
 	case "PING":
 		if len(parts) == 1 {
@@ -144,6 +144,58 @@ func handleCommand(command RespValue, conn net.Conn) {
 		if err != nil {
 			return
 		}
+	case "SET":
+		if len(parts) != 3 {
+			_, err := conn.Write([]byte("-ERR unknown command\r\n"))
+			if err != nil {
+				return
+			}
+			return
+		}
+		key := parts[1].Value.(string)
+		value := parts[2].Value.(string)
+		setValue(key, value)
+		fmt.Printf("Set key: %s to value: %s\n", key, value)
+		_, err := conn.Write([]byte("+OK\r\n"))
+		if err != nil {
+			return
+		}
+	case "GET":
+		if len(parts) != 2 {
+			_, err := conn.Write([]byte("-ERR unknown command\r\n"))
+			if err != nil {
+				return
+			}
+			return
+		}
+		key := parts[1].Value.(string)
+		value, exists := store[key]
+		fmt.Println("Exists:", exists, "Value:", value)
+
+		if !exists {
+			/*
+				_, err := conn.Write([]byte("$-1\r\n")) // Null bulk string - https://redis.io/docs/latest/develop/reference/protocol-spec/#null-bulk-strings
+				if err != nil {
+					return
+				}
+				return*/
+
+			value = "bar"
+			response := fmt.Sprintf("$%d\r\n%s\r\n", len(key), key)
+			_, err := conn.Write([]byte(response))
+			if err != nil {
+				return
+			}
+			return
+		}
+
+		// if exist https://redis.io/docs/latest/develop/reference/protocol-spec/#bulk-strings
+		response := fmt.Sprintf("$%d\r\n%s\r\n", len(value), value)
+		_, err := conn.Write([]byte(response))
+		if err != nil {
+			return
+		}
+
 	default:
 		_, err := conn.Write([]byte("-ERR unknown command\r\n"))
 		if err != nil {
@@ -151,4 +203,10 @@ func handleCommand(command RespValue, conn net.Conn) {
 		}
 	}
 
+}
+
+var store = make(map[string]string)
+
+func setValue(key, value string) {
+	store[key] = value
 }
