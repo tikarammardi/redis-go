@@ -40,3 +40,31 @@ func getValue(key string) (string, bool) {
 func deleteValue(key string) {
 	delete(store, key)
 }
+
+type ListItem struct {
+	Value  string
+	Next   *ListItem
+	Prev   *ListItem
+	Length int
+}
+
+var listStore = make(map[string]*ListItem)
+
+func rpushValue(key, value string) (int /*new length*/, error) {
+	if head, found := listStore[key]; found {
+		// Traverse to the end of the list
+		current := head
+		for current.Next != nil {
+			current = current.Next
+		}
+		newItem := &ListItem{Value: value, Prev: current}
+		current.Next = newItem
+		head.Length++
+		return head.Length, nil
+	} else {
+		// Create new list
+		newItem := &ListItem{Value: value, Length: 1}
+		listStore[key] = newItem
+		return 1, nil
+	}
+}
