@@ -108,6 +108,8 @@ func handleCommand(command RespValue, conn net.Conn) {
 		handleGet(parts, conn)
 	case "RPUSH":
 		handleRPush(parts, conn)
+	case "LRANGE":
+		handleLRange(parts, conn)
 
 	default:
 		_, err := conn.Write([]byte("-ERR unknown command\r\n"))
@@ -116,6 +118,60 @@ func handleCommand(command RespValue, conn net.Conn) {
 		}
 	}
 
+}
+
+func handleLRange(parts []RespValue, conn net.Conn) {
+	if len(parts) != 4 {
+		_, err := conn.Write([]byte("-ERR unknown command\r\n"))
+		if err != nil {
+			return
+		}
+		return
+	}
+	if parts[1].Type != BulkString || parts[2].Type != BulkString || parts[3].Type != BulkString {
+		_, err := conn.Write([]byte("-ERR unknown command\r\n"))
+		if err != nil {
+			return
+		}
+		return
+	}
+	key := parts[1].Value.(string)
+	startStr := parts[2].Value.(string)
+	endStr := parts[3].Value.(string)
+	fmt.Println("LRange:", startStr, endStr)
+	var start, end int
+	_, err := fmt.Sscanf(startStr, "%d", &start)
+	if err != nil {
+		_, err := conn.Write([]byte("-ERR unknown command\r\n"))
+		if err != nil {
+			return
+		}
+		return
+	}
+	_, err = fmt.Sscanf(endStr, "%d", &end)
+	if err != nil {
+		_, err := conn.Write([]byte("-ERR unknown command\r\n"))
+		if err != nil {
+			return
+		}
+		return
+	}
+	items, exists := getListRange(key, start, end)
+	if !exists {
+		_, err := conn.Write([]byte("*0\r\n")) // Empty array
+		if err != nil {
+			return
+		}
+		return
+	}
+	response := fmt.Sprintf("*%d\r\n", len(items))
+	for _, item := range items {
+		response += fmt.Sprintf("$%d\r\n%s\r\n", len(item), item)
+	}
+	_, err = conn.Write([]byte(response))
+	if err != nil {
+		return
+	}
 }
 
 func handleRPush(parts []RespValue, conn net.Conn) {

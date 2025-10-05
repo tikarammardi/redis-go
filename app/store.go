@@ -68,3 +68,37 @@ func rpushValue(key, value string) (int /*new length*/, error) {
 		return 1, nil
 	}
 }
+
+func getListRange(key string, start, end int) ([]string, bool) {
+	head, found := listStore[key]
+	if !found {
+		return nil, false
+	}
+	length := head.Length
+	if start < 0 {
+		start = length + start
+	}
+	if end < 0 {
+		end = length + end
+	}
+	if start < 0 {
+		start = 0
+	}
+	if end >= length {
+		end = length - 1
+	}
+	if start > end || start >= length {
+		return []string{}, true
+	}
+
+	result := []string{}
+	current := head
+	for i := 0; i < start; i++ {
+		current = current.Next
+	}
+	for i := start; i <= end && current != nil; i++ {
+		result = append(result, current.Value)
+		current = current.Next
+	}
+	return result, true
+}
