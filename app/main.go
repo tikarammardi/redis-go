@@ -114,6 +114,8 @@ func handleCommand(command RespValue, conn net.Conn) {
 		handleLPush(parts, conn)
 	case "LLEN":
 		handleLLen(parts, conn)
+	case "LPOP":
+		handleLPop(parts, conn)
 
 	default:
 		_, err := conn.Write([]byte("-ERR unknown command\r\n"))
@@ -122,6 +124,37 @@ func handleCommand(command RespValue, conn net.Conn) {
 		}
 	}
 
+}
+
+func handleLPop(parts []RespValue, conn net.Conn) {
+	if len(parts) != 2 {
+		_, err := conn.Write([]byte("-ERR unknown command\r\n"))
+		if err != nil {
+			return
+		}
+		return
+	}
+	if parts[1].Type != BulkString {
+		_, err := conn.Write([]byte("-ERR unknown command\r\n"))
+		if err != nil {
+			return
+		}
+		return
+	}
+	key := parts[1].Value.(string)
+	value, exists := lpopValue(key)
+	if !exists {
+		_, err := conn.Write([]byte("$-1\r\n")) // List does not exist or is empty, return null bulk string
+		if err != nil {
+			return
+		}
+		return
+	}
+	response := fmt.Sprintf("$%d\r\n%s\r\n", len(value), value)
+	_, err := conn.Write([]byte(response))
+	if err != nil {
+		return
+	}
 }
 
 func handleLLen(parts []RespValue, conn net.Conn) {

@@ -125,3 +125,19 @@ func getListLength(key string) (int, bool) {
 	}
 	return head.Length, true
 }
+
+func lpopValue(key string) (string, bool) {
+	head, found := listStore[key]
+	if !found {
+		return "", false
+	}
+	value := head.Value
+	if head.Next != nil {
+		head.Next.Prev = nil
+		listStore[key] = head.Next
+		listStore[key].Length = head.Length - 1
+	} else {
+		delete(listStore, key)
+	}
+	return value, true
+}
