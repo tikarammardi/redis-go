@@ -141,3 +141,24 @@ func lpopValue(key string) (string, bool) {
 	}
 	return value, true
 }
+
+func lpopMultipleValues(key string, count int) ([]string, bool) {
+	head, found := listStore[key]
+	if !found || count <= 0 {
+		return nil, false
+	}
+	values := []string{}
+	current := head
+	for i := 0; i < count && current != nil; i++ {
+		values = append(values, current.Value)
+		current = current.Next
+	}
+	if current != nil {
+		current.Prev = nil
+		listStore[key] = current
+		listStore[key].Length = head.Length - len(values)
+	} else {
+		delete(listStore, key)
+	}
+	return values, true
+}

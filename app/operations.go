@@ -7,13 +7,7 @@ import (
 )
 
 func handleLPop(parts []RespValue, conn net.Conn) {
-	if len(parts) != 2 {
-		_, err := conn.Write([]byte("-ERR unknown command\r\n"))
-		if err != nil {
-			return
-		}
-		return
-	}
+	printArgs(parts)
 	if parts[1].Type != BulkString {
 		_, err := conn.Write([]byte("-ERR unknown command\r\n"))
 		if err != nil {
@@ -21,7 +15,52 @@ func handleLPop(parts []RespValue, conn net.Conn) {
 		}
 		return
 	}
+
 	key := parts[1].Value.(string)
+	numberOfElementsToPop := 1
+	if len(parts) == 3 {
+		if parts[2].Type != BulkString {
+			_, err := conn.Write([]byte("-ERR unknown command\r\n"))
+			if err != nil {
+				return
+			}
+			return
+		}
+		_, err := fmt.Sscanf(parts[2].Value.(string), "%d", &numberOfElementsToPop)
+		if err != nil || numberOfElementsToPop <= 0 {
+			_, err := conn.Write([]byte("-ERR invalid count for LPOP\r\n"))
+			if err != nil {
+				return
+			}
+			return
+		}
+	} else if len(parts) > 3 {
+		_, err := conn.Write([]byte("-ERR unknown command\r\n"))
+		if err != nil {
+			return
+		}
+		return
+	}
+
+	if numberOfElementsToPop > 1 {
+		values, exists := lpopMultipleValues(key, numberOfElementsToPop)
+		if !exists || len(values) == 0 {
+			_, err := conn.Write([]byte("*0\r\n")) // List does not exist or is empty, return empty array
+			if err != nil {
+				return
+			}
+			return
+		}
+		response := fmt.Sprintf("*%d\r\n", len(values))
+		for _, value := range values {
+			response += fmt.Sprintf("$%d\r\n%s\r\n", len(value), value)
+		}
+		_, err := conn.Write([]byte(response))
+		if err != nil {
+			return
+		}
+		return
+	}
 	value, exists := lpopValue(key)
 	if !exists {
 		_, err := conn.Write([]byte("$-1\r\n")) // List does not exist or is empty, return null bulk string
@@ -397,4 +436,10 @@ func contains(commands []string, value string) bool {
 		}
 	}
 	return false
+}
+
+func printArgs(parts []RespValue) {
+	for index, part := range parts {
+		fmt.Printf("Arg %d: Type %d, Value %v\n", index, part.Type, part.Value)
+	}
 }
