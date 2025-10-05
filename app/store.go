@@ -117,3 +117,11 @@ func lpushValue(key, value string) (int /*new length*/, error) {
 		return 1, nil
 	}
 }
+
+func getListLength(key string) (int, bool) {
+	head, found := listStore[key]
+	if !found {
+		return 0, false
+	}
+	return head.Length, true
+}
