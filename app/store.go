@@ -102,3 +102,18 @@ func getListRange(key string, start, end int) ([]string, bool) {
 	}
 	return result, true
 }
+
+func lpushValue(key, value string) (int /*new length*/, error) {
+	if head, found := listStore[key]; found {
+		newItem := &ListItem{Value: value, Next: head}
+		head.Prev = newItem
+		newItem.Length = head.Length + 1
+		listStore[key] = newItem
+		return newItem.Length, nil
+	} else {
+		// Create new list
+		newItem := &ListItem{Value: value, Length: 1}
+		listStore[key] = newItem
+		return 1, nil
+	}
+}

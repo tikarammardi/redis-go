@@ -110,12 +110,58 @@ func handleCommand(command RespValue, conn net.Conn) {
 		handleRPush(parts, conn)
 	case "LRANGE":
 		handleLRange(parts, conn)
+	case "LPUSH":
+		handleLPush(parts, conn)
 
 	default:
 		_, err := conn.Write([]byte("-ERR unknown command\r\n"))
 		if err != nil {
 			return
 		}
+	}
+
+}
+
+func handleLPush(parts []RespValue, conn net.Conn) {
+	if len(parts) < 3 {
+		_, err := conn.Write([]byte("-ERR unknown command\r\n"))
+		if err != nil {
+			return
+		}
+		return
+	}
+	if parts[1].Type != BulkString {
+		_, err := conn.Write([]byte("-ERR unknown command\r\n"))
+		if err != nil {
+			return
+		}
+		return
+	}
+	key := parts[1].Value.(string)
+	newLength := 0
+	for i := 2; i < len(parts); i++ {
+		if parts[i].Type != BulkString {
+			_, err := conn.Write([]byte("-ERR unknown command\r\n"))
+			if err != nil {
+				return
+			}
+			return
+		}
+		value := parts[i].Value.(string)
+		length, err := lpushValue(key, value)
+		if err != nil {
+			_, err := conn.Write([]byte("-ERR unknown command\r\n"))
+			if err != nil {
+				return
+			}
+			return
+		}
+		newLength = length
+	}
+	response := fmt.Sprintf(":%d\r\n", newLength)
+	_, err := conn.Write([]byte(response))
+	if err != nil {
+		return
 	}
 
 }
