@@ -416,3 +416,40 @@ func (h *BLPopHandler) Handle(parts []RespValue, conn net.Conn) error {
 		return h.writer.WriteNullArray()
 	}
 }
+
+type TypeHandler struct {
+	store  KeyValueStore
+	lstore ListStore
+	writer ResponseWriter
+}
+
+func NewTypeHandler(store KeyValueStore, lstore ListStore, writer ResponseWriter) *TypeHandler {
+	return &TypeHandler{store: store, lstore: lstore, writer: writer}
+}
+
+func (h *TypeHandler) Handle(parts []RespValue, conn net.Conn) error {
+	if len(parts) != 2 {
+		return h.writer.WriteError(ErrUnknownCommand)
+	}
+
+	if parts[1].Type != BulkString {
+		return h.writer.WriteError(ErrUnknownCommand)
+	}
+
+	key := parts[1].Value.(string)
+
+	// Check in key-value store
+	_, exists := h.store.Get(key)
+	if exists {
+		return h.writer.WriteBulkString("string")
+	}
+
+	// Check in list store
+	_, exists = h.lstore.LLen(key)
+	if exists {
+		return h.writer.WriteBulkString("list")
+	}
+
+	// Key does not exist
+	return h.writer.WriteBulkString("none")
+}
