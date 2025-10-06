@@ -534,20 +534,47 @@ func (h *XAddHandler) Handle(parts []RespValue, conn net.Conn) error {
 	if id == "*" {
 		// Auto-generate ID using current timestamp
 		timestamp := time.Now().UnixMilli()
-		entryID = strconv.FormatInt(timestamp, 10) + "-0"
 
-		// Ensure auto-generated ID is greater than last entry
+		// Determine sequence number based on existing entries
+		sequence := h.getNextSequenceNumber(key, timestamp)
+		entryID = strconv.FormatInt(timestamp, 10) + "-" + strconv.FormatInt(sequence, 10)
+
+		// Ensure auto-generated ID is greater than last entry (should be guaranteed by our logic)
 		if lastEntryID != "" && !h.isIDGreater(entryID, lastEntryID) {
-			// If timestamp is same or less, increment sequence
+			// This should not happen with correct sequence generation, but handle edge case
 			lastParts := strings.Split(lastEntryID, "-")
 			if len(lastParts) == 2 {
 				lastTimestamp, _ := strconv.ParseInt(lastParts[0], 10, 64)
 				lastSequence, _ := strconv.ParseInt(lastParts[1], 10, 64)
 
+				// Use the later timestamp and increment sequence
 				if timestamp <= lastTimestamp {
 					entryID = strconv.FormatInt(lastTimestamp, 10) + "-" + strconv.FormatInt(lastSequence+1, 10)
 				}
 			}
+		}
+	} else if strings.HasSuffix(id, "-*") {
+		// Partially auto-generated ID: timestamp specified, sequence auto-generated
+		timestampStr := strings.TrimSuffix(id, "-*")
+
+		// Validate timestamp part
+		timestamp, err := strconv.ParseInt(timestampStr, 10, 64)
+		if err != nil || timestamp < 0 {
+			return h.writer.WriteError("ERR Invalid stream ID specified as stream command argument")
+		}
+
+		// Generate sequence number for this timestamp
+		sequence := h.getNextSequenceNumber(key, timestamp)
+		entryID = strconv.FormatInt(timestamp, 10) + "-" + strconv.FormatInt(sequence, 10)
+
+		// Validate that the generated ID is greater than last entry
+		if lastEntryID != "" && !h.isIDGreater(entryID, lastEntryID) {
+			return h.writer.WriteError("ERR The ID specified in XADD is equal or smaller than the target stream top item")
+		}
+
+		// Check minimum valid ID (must be greater than 0-0)
+		if timestamp == 0 && sequence == 0 {
+			return h.writer.WriteError("ERR The ID specified in XADD must be greater than 0-0")
 		}
 	} else {
 		// Validate explicit ID format (should be timestamp-sequence)
@@ -675,4 +702,37 @@ func (h *XAddHandler) isIDGreater(id1, id2 string) bool {
 	}
 
 	return false
+}
+
+// getNextSequenceNumber determines the correct sequence number for auto-generated IDs
+func (h *XAddHandler) getNextSequenceNumber(key string, timestamp int64) int64 {
+	prefix := key + ":"
+	timestampStr := strconv.FormatInt(timestamp, 10)
+
+	// Check if there are existing entries with the same timestamp
+	var maxSequence int64 = -1
+	hasEntriesWithSameTime := false
+
+	// Check for existing entries with the same timestamp
+	for seq := int64(0); seq <= 10; seq++ { // Check reasonable range
+		testKey := prefix + timestampStr + "-" + strconv.FormatInt(seq, 10)
+		if _, exists := h.store.Get(testKey); exists {
+			hasEntriesWithSameTime = true
+			maxSequence = seq
+		}
+	}
+
+	if hasEntriesWithSameTime {
+		// There are entries with the same timestamp, increment the sequence
+		return maxSequence + 1
+	}
+
+	// No entries with this timestamp exist
+	if timestamp == 0 {
+		// Special case: when timestamp is 0, sequence starts at 1
+		return 1
+	} else {
+		// For other timestamps, sequence starts at 0
+		return 0
+	}
 }
