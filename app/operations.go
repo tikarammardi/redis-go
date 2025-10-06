@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"net"
 	"strings"
+	"time"
 )
 
 func handleLPop(parts []RespValue, conn net.Conn) {
@@ -427,6 +428,112 @@ func handlePing(parts []RespValue, conn net.Conn) bool {
 		}
 	}
 	return false
+}
+
+func handleBLPop(parts []RespValue, conn net.Conn) {
+	printArgs(parts)
+
+	// BLPOP requires at least 3 parts: command, key(s), timeout
+	if len(parts) < 3 {
+		_, err := conn.Write([]byte("-ERR wrong number of arguments for 'blpop' command\r\n"))
+		if err != nil {
+			return
+		}
+		return
+	}
+
+	// Last argument is always the timeout
+	timeoutStr, ok := parts[len(parts)-1].Value.(string)
+	if !ok || parts[len(parts)-1].Type != BulkString {
+		_, err := conn.Write([]byte("-ERR timeout is not a float or out of range\r\n"))
+		if err != nil {
+			return
+		}
+		return
+	}
+
+	var timeoutSeconds float64
+	_, err := fmt.Sscanf(timeoutStr, "%f", &timeoutSeconds)
+	if err != nil || timeoutSeconds < 0 {
+		_, err := conn.Write([]byte("-ERR timeout is not a float or out of range\r\n"))
+		if err != nil {
+			return
+		}
+		return
+	}
+
+	// Extract keys (all parts except command and timeout)
+	keys := make([]string, 0, len(parts)-2)
+	for i := 1; i < len(parts)-1; i++ {
+		if parts[i].Type != BulkString {
+			_, err := conn.Write([]byte("-ERR wrong number of arguments for 'blpop' command\r\n"))
+			if err != nil {
+				return
+			}
+			return
+		}
+		keys = append(keys, parts[i].Value.(string))
+	}
+
+	// Try to pop from any of the keys immediately
+	for _, key := range keys {
+		value, exists := lpopValue(key)
+		if exists {
+			// Found a value, return it immediately
+			response := fmt.Sprintf("*2\r\n$%d\r\n%s\r\n$%d\r\n%s\r\n", len(key), key, len(value), value)
+			_, err := conn.Write([]byte(response))
+			if err != nil {
+				return
+			}
+			return
+		}
+	}
+
+	// No values found, need to block
+	if timeoutSeconds == 0 {
+		// Block indefinitely
+		for {
+			for _, key := range keys {
+				value, exists := lpopValue(key)
+				if exists {
+					response := fmt.Sprintf("*2\r\n$%d\r\n%s\r\n$%d\r\n%s\r\n", len(key), key, len(value), value)
+					_, err := conn.Write([]byte(response))
+					if err != nil {
+						return
+					}
+					return
+				}
+			}
+			// Sleep briefly to avoid busy waiting
+			time.Sleep(10 * time.Millisecond)
+		}
+	} else {
+		// Block with timeout
+		timeout := time.Duration(timeoutSeconds * float64(time.Second))
+		deadline := time.Now().Add(timeout)
+
+		for time.Now().Before(deadline) {
+			for _, key := range keys {
+				value, exists := lpopValue(key)
+				if exists {
+					response := fmt.Sprintf("*2\r\n$%d\r\n%s\r\n$%d\r\n%s\r\n", len(key), key, len(value), value)
+					_, err := conn.Write([]byte(response))
+					if err != nil {
+						return
+					}
+					return
+				}
+			}
+			// Sleep briefly to avoid busy waiting
+			time.Sleep(10 * time.Millisecond)
+		}
+
+		// Timeout reached, return null
+		_, err := conn.Write([]byte("*-1\r\n"))
+		if err != nil {
+			return
+		}
+	}
 }
 
 func contains(commands []string, value string) bool {

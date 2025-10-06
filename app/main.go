@@ -116,6 +116,8 @@ func handleCommand(command RespValue, conn net.Conn) {
 		handleLLen(parts, conn)
 	case "LPOP":
 		handleLPop(parts, conn)
+	case "BLPOP":
+		handleBLPop(parts, conn)
 
 	default:
 		_, err := conn.Write([]byte("-ERR unknown command\r\n"))
