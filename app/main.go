@@ -8,122 +8,95 @@ import (
 	"strings"
 )
 
-// Ensures gofmt doesn't remove the "net" and "os" imports in stage 1 (feel free to remove this!)
-var _ = net.Listen
-var _ = os.Exit
+// RedisServer implements Server interface
+type RedisServer struct {
+	processor CommandProcessor
+	listener  net.Listener
+}
 
-func main() {
-	// You can use print statements as follows for debugging, they'll be visible when running tests.
-	fmt.Println("Logs from your program will appear here!")
+// NewRedisServer creates a new Redis server with dependency injection
+func NewRedisServer() *RedisServer {
+	// Create stores
+	kvStore := NewInMemoryKeyValueStore()
+	listStore := NewInMemoryListStore()
 
-	// Uncomment this block to pass the first stage
-	//
-	l, err := net.Listen("tcp", "0.0.0.0:6379")
-	if err != nil {
-		fmt.Println("Failed to bind to port 6379")
-		os.Exit(1)
-	}
-	for {
-		conn, err := l.Accept()
-		if err != nil {
-			fmt.Println("Error accepting connection: ", err.Error())
-			os.Exit(1)
-		}
-		go handleConnection(conn)
+	// Create command processor with dependency injection
+	processor := NewRedisCommandProcessor(kvStore, listStore)
+
+	return &RedisServer{
+		processor: processor,
 	}
 }
 
-func handleConnection(conn net.Conn) {
+func (s *RedisServer) Start(address string) error {
+	fmt.Println("Starting Redis server on", address)
+
+	listener, err := net.Listen("tcp", address)
+	if err != nil {
+		return fmt.Errorf("failed to bind to %s: %w", address, err)
+	}
+
+	s.listener = listener
+
+	for {
+		conn, err := listener.Accept()
+		if err != nil {
+			fmt.Printf("Error accepting connection: %v\n", err)
+			continue
+		}
+
+		// Handle each connection in a separate goroutine
+		go s.handleConnection(conn)
+	}
+}
+
+func (s *RedisServer) Stop() error {
+	if s.listener != nil {
+		return s.listener.Close()
+	}
+	return nil
+}
+
+func (s *RedisServer) handleConnection(conn net.Conn) {
 	defer conn.Close()
+
 	for {
 		buf := make([]byte, 1024)
 		n, err := conn.Read(buf)
 		if err != nil {
-			fmt.Println("Error reading from connection: ", err.Error())
+			fmt.Printf("Error reading from connection: %v\n", err)
 			return
 		}
+
 		request := string(buf[:n])
 		r := bufio.NewReader(strings.NewReader(request))
-		command, err := ParseRESP(r)
-		fmt.Println("CommandType:", command.Type, "Value:", command.Value)
-		/*
-			CommandType: 4 Value: [{3 ECHO} {3 pear}]
-			CommandType: 4
-			This is the RESP Array type, where 4 is  internal enumeration for arrays.
-			Value: [{3 ECHO} {3 pear}]
-			This is a slice/array of RESP values. Each item is parsed as {3 ECHO} and {3 pear}:
-			{3 ECHO}: Here, 3 maps to BulkString type (the prefix $ in RESP).
-			Value is "ECHO" (BulkString).
-			{3 pear}: Type 3 again means BulkString.
-			Value is "pear".
 
-		*/
+		command, err := ParseRESP(r)
 		if err != nil {
-			_, err := conn.Write([]byte("-ERR unknown command\r\n"))
-			if err != nil {
-				return
-			}
+			writer := NewRespResponseWriter(conn)
+			writer.WriteError("ERR unknown command")
 			continue
 		}
-		handleCommand(command, conn)
+
+		fmt.Printf("CommandType: %v, Value: %v\n", command.Type, command.Value)
+
+		// Process command using the command processor
+		err = s.processor.Process(command, conn)
+		if err != nil {
+			fmt.Printf("Error processing command: %v\n", err)
+		}
 	}
 }
 
-func handleCommand(command RespValue, conn net.Conn) {
+func main() {
+	fmt.Println("Logs from your program will appear here!")
 
-	if command.Type != ArrayType {
-		_, err := conn.Write([]byte("-ERR unknown command\r\n"))
-		if err != nil {
-			return
-		}
-		return
+	// Create and start the server
+	server := NewRedisServer()
+
+	err := server.Start("0.0.0.0:6379")
+	if err != nil {
+		fmt.Printf("Failed to start server: %v\n", err)
+		os.Exit(1)
 	}
-
-	parts, ok := command.Value.([]RespValue)
-	if !ok || len(parts) == 0 {
-		_, err := conn.Write([]byte("-ERR unknown command\r\n"))
-		if err != nil {
-			return
-		}
-		return
-	}
-
-	cmd, ok := parts[0].Value.(string)
-	if !ok {
-		_, err := conn.Write([]byte("-ERR unknown command\r\n"))
-		if err != nil {
-			return
-		}
-		return
-	}
-	fmt.Println("Parts Debug:", parts)
-	switch strings.ToUpper(cmd) {
-	case "PING":
-		handlePing(parts, conn)
-	case "ECHO":
-		handleEcho(parts, conn)
-	case "SET":
-		handleSet(parts, conn)
-	case "GET":
-		handleGet(parts, conn)
-	case "RPUSH":
-		handleRPush(parts, conn)
-	case "LRANGE":
-		handleLRange(parts, conn)
-	case "LPUSH":
-		handleLPush(parts, conn)
-	case "LLEN":
-		handleLLen(parts, conn)
-	case "LPOP":
-		handleLPop(parts, conn)
-	case "BLPOP":
-		handleBLPop(parts, conn)
-
-	default:
-		_, err := conn.Write([]byte("-ERR unknown command\r\n"))
-		if err != nil {
-			return
-		}
-	}
-
 }

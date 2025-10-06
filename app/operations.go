@@ -1,510 +1,399 @@
 package main
 
 import (
-	"fmt"
 	"net"
+	"strconv"
 	"strings"
 	"time"
 )
 
-func handleLPop(parts []RespValue, conn net.Conn) {
-	printArgs(parts)
-	if parts[1].Type != BulkString {
-		_, err := conn.Write([]byte("-ERR unknown command\r\n"))
-		if err != nil {
-			return
-		}
-		return
-	}
+// Constants for error messages to follow DRY principle
+const (
+	ErrUnknownCommand = "ERR unknown command"
+)
 
-	key := parts[1].Value.(string)
-	numberOfElementsToPop := 1
-	if len(parts) == 3 {
-		if parts[2].Type != BulkString {
-			_, err := conn.Write([]byte("-ERR unknown command\r\n"))
-			if err != nil {
-				return
-			}
-			return
-		}
-		_, err := fmt.Sscanf(parts[2].Value.(string), "%d", &numberOfElementsToPop)
-		if err != nil || numberOfElementsToPop <= 0 {
-			_, err := conn.Write([]byte("-ERR invalid count for LPOP\r\n"))
-			if err != nil {
-				return
-			}
-			return
-		}
-	} else if len(parts) > 3 {
-		_, err := conn.Write([]byte("-ERR unknown command\r\n"))
-		if err != nil {
-			return
-		}
-		return
-	}
-
-	if numberOfElementsToPop > 1 {
-		values, exists := lpopMultipleValues(key, numberOfElementsToPop)
-		if !exists || len(values) == 0 {
-			_, err := conn.Write([]byte("*0\r\n")) // List does not exist or is empty, return empty array
-			if err != nil {
-				return
-			}
-			return
-		}
-		response := fmt.Sprintf("*%d\r\n", len(values))
-		for _, value := range values {
-			response += fmt.Sprintf("$%d\r\n%s\r\n", len(value), value)
-		}
-		_, err := conn.Write([]byte(response))
-		if err != nil {
-			return
-		}
-		return
-	}
-	value, exists := lpopValue(key)
-	if !exists {
-		_, err := conn.Write([]byte("$-1\r\n")) // List does not exist or is empty, return null bulk string
-		if err != nil {
-			return
-		}
-		return
-	}
-	response := fmt.Sprintf("$%d\r\n%s\r\n", len(value), value)
-	_, err := conn.Write([]byte(response))
-	if err != nil {
-		return
-	}
+// PingHandler handles PING commands
+type PingHandler struct {
+	writer ResponseWriter
 }
 
-func handleLLen(parts []RespValue, conn net.Conn) {
-	if len(parts) != 2 {
-		_, err := conn.Write([]byte("-ERR unknown command\r\n"))
-		if err != nil {
-			return
-		}
-		return
-	}
-	if parts[1].Type != BulkString {
-		_, err := conn.Write([]byte("-ERR unknown command\r\n"))
-		if err != nil {
-			return
-		}
-		return
-	}
-	key := parts[1].Value.(string)
-	length, exists := getListLength(key)
-	if !exists {
-		_, err := conn.Write([]byte(":0\r\n")) // List does not exist, return 0 length
-		if err != nil {
-			return
-		}
-		return
-	}
-	response := fmt.Sprintf(":%d\r\n", length)
-	_, err := conn.Write([]byte(response))
-	if err != nil {
-		return
-	}
+func NewPingHandler(writer ResponseWriter) *PingHandler {
+	return &PingHandler{writer: writer}
 }
 
-func handleLPush(parts []RespValue, conn net.Conn) {
-	if len(parts) < 3 {
-		_, err := conn.Write([]byte("-ERR unknown command\r\n"))
-		if err != nil {
-			return
-		}
-		return
-	}
-	if parts[1].Type != BulkString {
-		_, err := conn.Write([]byte("-ERR unknown command\r\n"))
-		if err != nil {
-			return
-		}
-		return
-	}
-	key := parts[1].Value.(string)
-	newLength := 0
-	for i := 2; i < len(parts); i++ {
-		if parts[i].Type != BulkString {
-			_, err := conn.Write([]byte("-ERR unknown command\r\n"))
-			if err != nil {
-				return
-			}
-			return
-		}
-		value := parts[i].Value.(string)
-		length, err := lpushValue(key, value)
-		if err != nil {
-			_, err := conn.Write([]byte("-ERR unknown command\r\n"))
-			if err != nil {
-				return
-			}
-			return
-		}
-		newLength = length
-	}
-	response := fmt.Sprintf(":%d\r\n", newLength)
-	_, err := conn.Write([]byte(response))
-	if err != nil {
-		return
-	}
-
-}
-
-func handleLRange(parts []RespValue, conn net.Conn) {
-	if len(parts) != 4 {
-		_, err := conn.Write([]byte("-ERR unknown command\r\n"))
-		if err != nil {
-			return
-		}
-		return
-	}
-	if parts[1].Type != BulkString || parts[2].Type != BulkString || parts[3].Type != BulkString {
-		_, err := conn.Write([]byte("-ERR unknown command\r\n"))
-		if err != nil {
-			return
-		}
-		return
-	}
-	key := parts[1].Value.(string)
-	startStr := parts[2].Value.(string)
-	endStr := parts[3].Value.(string)
-	fmt.Println("LRange:", startStr, endStr)
-	var start, end int
-	_, err := fmt.Sscanf(startStr, "%d", &start)
-	if err != nil {
-		_, err := conn.Write([]byte("-ERR unknown command\r\n"))
-		if err != nil {
-			return
-		}
-		return
-	}
-	_, err = fmt.Sscanf(endStr, "%d", &end)
-	if err != nil {
-		_, err := conn.Write([]byte("-ERR unknown command\r\n"))
-		if err != nil {
-			return
-		}
-		return
-	}
-	items, exists := getListRange(key, start, end)
-	if !exists {
-		_, err := conn.Write([]byte("*0\r\n")) // Empty array
-		if err != nil {
-			return
-		}
-		return
-	}
-	response := fmt.Sprintf("*%d\r\n", len(items))
-	for _, item := range items {
-		response += fmt.Sprintf("$%d\r\n%s\r\n", len(item), item)
-	}
-	_, err = conn.Write([]byte(response))
-	if err != nil {
-		return
-	}
-}
-
-func handleRPush(parts []RespValue, conn net.Conn) {
-	if len(parts) < 3 {
-		_, err := conn.Write([]byte("-ERR unknown command\r\n"))
-		if err != nil {
-			return
-		}
-		return
-	}
-	if parts[1].Type != BulkString {
-		_, err := conn.Write([]byte("-ERR unknown command\r\n"))
-		if err != nil {
-			return
-		}
-		return
-	}
-	key := parts[1].Value.(string)
-	newLength := 0
-	for i := 2; i < len(parts); i++ {
-		if parts[i].Type != BulkString {
-			_, err := conn.Write([]byte("-ERR unknown command\r\n"))
-			if err != nil {
-				return
-			}
-			return
-		}
-		value := parts[i].Value.(string)
-		length, err := rpushValue(key, value)
-		if err != nil {
-			_, err := conn.Write([]byte("-ERR unknown command\r\n"))
-			if err != nil {
-				return
-			}
-			return
-		}
-		newLength = length
-	}
-	response := fmt.Sprintf(":%d\r\n", newLength)
-	_, err := conn.Write([]byte(response))
-	if err != nil {
-		return
-	}
-}
-
-func handleGet(parts []RespValue, conn net.Conn) bool {
-	if len(parts) != 2 {
-		_, err := conn.Write([]byte("-ERR unknown command\r\n"))
-		if err != nil {
-			return true
-		}
-		return true
-	}
-	key := parts[1].Value.(string)
-
-	value, exists := getValue(key)
-	fmt.Println("Exists:", exists, "Value:", value)
-
-	if !exists {
-
-		_, err := conn.Write([]byte("$-1\r\n")) // Null bulk string - https://redis.io/docs/latest/develop/reference/protocol-spec/#null-bulk-strings
-		if err != nil {
-			return true
-		}
-		return true
-
-		//value = "bar"
-		//response := fmt.Sprintf("$%d\r\n%s\r\n", len(key), key)
-		//_, err := conn.Write([]byte(response))
-		//if err != nil {
-		//	return
-		//}
-		//return
-	}
-
-	// if exist https://redis.io/docs/latest/develop/reference/protocol-spec/#bulk-strings
-	response := fmt.Sprintf("$%d\r\n%s\r\n", len(value), value)
-	_, err := conn.Write([]byte(response))
-	if err != nil {
-		return true
-	}
-	return false
-}
-
-func handleSet(parts []RespValue, conn net.Conn) bool {
-	for i := range parts {
-		fmt.Printf("Part %d: Type %d, Value %v\n", i, parts[i].Type, parts[i].Value)
-	}
-	//if len(parts) != 3 {
-	//	_, err := conn.Write([]byte("-ERR unknown command\r\n"))
-	//	if err != nil {
-	//		return
-	//	}
-	//	return
-	//}
-	expiryCommands := []string{"EX", "PX"}
-	expiryValue := 0
-	for i := 3; i < len(parts); i += 2 {
-		partValue, ok := parts[i].Value.(string)
-		if !ok {
-			_, err := conn.Write([]byte("-ERR unknown command\r\n"))
-			if err != nil {
-				return true
-			}
-			return true
-		}
-		partValue = strings.ToUpper(partValue)
-		if !contains(expiryCommands, partValue) {
-			_, err := conn.Write([]byte("-ERR unknown command\r\n"))
-			if err != nil {
-				return true
-			}
-			return true
-		}
-		// if ex time will be in seconds and  px time will be in milliseconds
-
-		if i+1 >= len(parts) {
-			_, err := conn.Write([]byte("-ERR unknown command\r\n"))
-			if err != nil {
-				return true
-			}
-			return true
-		}
-		timeValue, ok := parts[i+1].Value.(string)
-		if !ok {
-			_, err := conn.Write([]byte("-ERR unknown command\r\n"))
-			if err != nil {
-				return true
-			}
-			return true
-		}
-		var timeInt int
-		_, err := fmt.Sscanf(timeValue, "%d", &timeInt)
-		if err != nil || timeInt <= 0 {
-			_, err := conn.Write([]byte("-ERR invalid expire time in set\r\n"))
-			if err != nil {
-				return true
-			}
-			return true
-		}
-		if partValue == "EX" {
-			expiryValue = timeInt * 1000 // convert to milliseconds
-		} else if partValue == "PX" {
-			expiryValue = timeInt
-		}
-	}
-
-	if len(parts) < 3 {
-		_, err := conn.Write([]byte("-ERR unknown command\r\n"))
-		if err != nil {
-			return true
-		}
-		return true
-	}
-	if parts[1].Type != BulkString || parts[2].Type != BulkString {
-		_, err := conn.Write([]byte("-ERR unknown command\r\n"))
-		if err != nil {
-			return true
-		}
-		return true
-	}
-	expiry := expiryValue
-	key := parts[1].Value.(string)
-	value := parts[2].Value.(string)
-	setValue(key, value, expiry)
-	fmt.Printf("Set key: %s to value: %s\n", key, value)
-	_, err := conn.Write([]byte("+OK\r\n"))
-	if err != nil {
-		return true
-	}
-	return false
-}
-
-func handleEcho(parts []RespValue, conn net.Conn) bool {
-	if len(parts) != 2 {
-		_, err := conn.Write([]byte("-ERR unknown command\r\n"))
-		if err != nil {
-			return true
-		}
-		return true
-	}
-	msg, ok := parts[1].Value.(string)
-	if !ok {
-		_, err := conn.Write([]byte("-ERR unknown command\r\n"))
-		if err != nil {
-			return true
-		}
-		return true
-	}
-	response := fmt.Sprintf("$%d\r\n%s\r\n", len(msg), msg)
-	_, err := conn.Write([]byte(response))
-	if err != nil {
-		return true
-	}
-	return false
-}
-
-func handlePing(parts []RespValue, conn net.Conn) bool {
+func (h *PingHandler) Handle(parts []RespValue, conn net.Conn) error {
 	if len(parts) == 1 {
-		_, err := conn.Write([]byte("+PONG\r\n"))
-		if err != nil {
-			return true
-		}
+		return h.writer.WriteSimpleString("PONG")
 	} else if len(parts) == 2 {
 		msg, ok := parts[1].Value.(string)
 		if !ok {
-			_, err := conn.Write([]byte("-ERR unknown command\r\n"))
-			if err != nil {
-				return true
-			}
-			return true
+			return h.writer.WriteError(ErrUnknownCommand)
 		}
-		response := fmt.Sprintf("+%s\r\n", msg)
-		_, err := conn.Write([]byte(response))
-		if err != nil {
-			return true
-		}
-	} else {
-		_, err := conn.Write([]byte("-ERR unknown command\r\n"))
-		if err != nil {
-			return true
-		}
+		return h.writer.WriteSimpleString(msg)
 	}
-	return false
+	return h.writer.WriteError(ErrUnknownCommand)
 }
 
-func handleBLPop(parts []RespValue, conn net.Conn) {
-	printArgs(parts)
+// EchoHandler handles ECHO commands
+type EchoHandler struct {
+	writer ResponseWriter
+}
 
-	// BLPOP requires at least 3 parts: command, key(s), timeout
+func NewEchoHandler(writer ResponseWriter) *EchoHandler {
+	return &EchoHandler{writer: writer}
+}
+
+func (h *EchoHandler) Handle(parts []RespValue, conn net.Conn) error {
+	if len(parts) != 2 {
+		return h.writer.WriteError(ErrUnknownCommand)
+	}
+	msg, ok := parts[1].Value.(string)
+	if !ok {
+		return h.writer.WriteError(ErrUnknownCommand)
+	}
+	return h.writer.WriteBulkString(msg)
+}
+
+// SetHandler handles SET commands
+type SetHandler struct {
+	store  KeyValueStore
+	writer ResponseWriter
+}
+
+func NewSetHandler(store KeyValueStore, writer ResponseWriter) *SetHandler {
+	return &SetHandler{store: store, writer: writer}
+}
+
+func (h *SetHandler) Handle(parts []RespValue, conn net.Conn) error {
 	if len(parts) < 3 {
-		_, err := conn.Write([]byte("-ERR wrong number of arguments for 'blpop' command\r\n"))
-		if err != nil {
-			return
-		}
-		return
+		return h.writer.WriteError(ErrUnknownCommand)
 	}
 
-	// Last argument is always the timeout
+	if parts[1].Type != BulkString || parts[2].Type != BulkString {
+		return h.writer.WriteError(ErrUnknownCommand)
+	}
+
+	key := parts[1].Value.(string)
+	value := parts[2].Value.(string)
+
+	// Parse expiry options
+	var expiry time.Duration
+	for i := 3; i < len(parts); i += 2 {
+		if i+1 >= len(parts) {
+			return h.writer.WriteError(ErrUnknownCommand)
+		}
+
+		optionValue, ok := parts[i].Value.(string)
+		if !ok {
+			return h.writer.WriteError(ErrUnknownCommand)
+		}
+
+		timeValue, ok := parts[i+1].Value.(string)
+		if !ok {
+			return h.writer.WriteError(ErrUnknownCommand)
+		}
+
+		timeInt, err := strconv.Atoi(timeValue)
+		if err != nil || timeInt <= 0 {
+			return h.writer.WriteError("ERR invalid expire time in set")
+		}
+
+		switch strings.ToUpper(optionValue) {
+		case "EX":
+			expiry = time.Duration(timeInt) * time.Second
+		case "PX":
+			expiry = time.Duration(timeInt) * time.Millisecond
+		default:
+			return h.writer.WriteError(ErrUnknownCommand)
+		}
+	}
+
+	var err error
+	if expiry > 0 {
+		err = h.store.Set(key, value, expiry)
+	} else {
+		err = h.store.Set(key, value)
+	}
+
+	if err != nil {
+		return h.writer.WriteError(ErrUnknownCommand)
+	}
+
+	return h.writer.WriteSimpleString("OK")
+}
+
+// GetHandler handles GET commands
+type GetHandler struct {
+	store  KeyValueStore
+	writer ResponseWriter
+}
+
+func NewGetHandler(store KeyValueStore, writer ResponseWriter) *GetHandler {
+	return &GetHandler{store: store, writer: writer}
+}
+
+func (h *GetHandler) Handle(parts []RespValue, conn net.Conn) error {
+	if len(parts) != 2 {
+		return h.writer.WriteError(ErrUnknownCommand)
+	}
+
+	key := parts[1].Value.(string)
+	value, exists := h.store.Get(key)
+
+	if !exists {
+		return h.writer.WriteNullBulkString()
+	}
+
+	return h.writer.WriteBulkString(value)
+}
+
+// LPushHandler handles LPUSH commands
+type LPushHandler struct {
+	store  ListStore
+	writer ResponseWriter
+}
+
+func NewLPushHandler(store ListStore, writer ResponseWriter) *LPushHandler {
+	return &LPushHandler{store: store, writer: writer}
+}
+
+func (h *LPushHandler) Handle(parts []RespValue, conn net.Conn) error {
+	if len(parts) < 3 {
+		return h.writer.WriteError(ErrUnknownCommand)
+	}
+
+	if parts[1].Type != BulkString {
+		return h.writer.WriteError(ErrUnknownCommand)
+	}
+
+	key := parts[1].Value.(string)
+	values := make([]string, 0, len(parts)-2)
+
+	for i := 2; i < len(parts); i++ {
+		if parts[i].Type != BulkString {
+			return h.writer.WriteError(ErrUnknownCommand)
+		}
+		values = append(values, parts[i].Value.(string))
+	}
+
+	length, err := h.store.LPush(key, values...)
+	if err != nil {
+		return h.writer.WriteError(ErrUnknownCommand)
+	}
+
+	return h.writer.WriteInteger(length)
+}
+
+// RPushHandler handles RPUSH commands
+type RPushHandler struct {
+	store  ListStore
+	writer ResponseWriter
+}
+
+func NewRPushHandler(store ListStore, writer ResponseWriter) *RPushHandler {
+	return &RPushHandler{store: store, writer: writer}
+}
+
+func (h *RPushHandler) Handle(parts []RespValue, conn net.Conn) error {
+	if len(parts) < 3 {
+		return h.writer.WriteError(ErrUnknownCommand)
+	}
+
+	if parts[1].Type != BulkString {
+		return h.writer.WriteError(ErrUnknownCommand)
+	}
+
+	key := parts[1].Value.(string)
+	values := make([]string, 0, len(parts)-2)
+
+	for i := 2; i < len(parts); i++ {
+		if parts[i].Type != BulkString {
+			return h.writer.WriteError(ErrUnknownCommand)
+		}
+		values = append(values, parts[i].Value.(string))
+	}
+
+	length, err := h.store.RPush(key, values...)
+	if err != nil {
+		return h.writer.WriteError(ErrUnknownCommand)
+	}
+
+	return h.writer.WriteInteger(length)
+}
+
+// LPopHandler handles LPOP commands
+type LPopHandler struct {
+	store  ListStore
+	writer ResponseWriter
+}
+
+func NewLPopHandler(store ListStore, writer ResponseWriter) *LPopHandler {
+	return &LPopHandler{store: store, writer: writer}
+}
+
+func (h *LPopHandler) Handle(parts []RespValue, conn net.Conn) error {
+	if len(parts) < 2 || len(parts) > 3 {
+		return h.writer.WriteError(ErrUnknownCommand)
+	}
+
+	if parts[1].Type != BulkString {
+		return h.writer.WriteError(ErrUnknownCommand)
+	}
+
+	key := parts[1].Value.(string)
+	count := 1
+
+	if len(parts) == 3 {
+		if parts[2].Type != BulkString {
+			return h.writer.WriteError(ErrUnknownCommand)
+		}
+		var err error
+		count, err = strconv.Atoi(parts[2].Value.(string))
+		if err != nil || count <= 0 {
+			return h.writer.WriteError("ERR invalid count for LPOP")
+		}
+	}
+
+	values, exists := h.store.LPop(key, count)
+	if !exists || len(values) == 0 {
+		if count == 1 {
+			return h.writer.WriteNullBulkString()
+		}
+		return h.writer.WriteEmptyArray()
+	}
+
+	if count == 1 {
+		return h.writer.WriteBulkString(values[0])
+	}
+
+	return h.writer.WriteArray(values)
+}
+
+// LRangeHandler handles LRANGE commands
+type LRangeHandler struct {
+	store  ListStore
+	writer ResponseWriter
+}
+
+func NewLRangeHandler(store ListStore, writer ResponseWriter) *LRangeHandler {
+	return &LRangeHandler{store: store, writer: writer}
+}
+
+func (h *LRangeHandler) Handle(parts []RespValue, conn net.Conn) error {
+	if len(parts) != 4 {
+		return h.writer.WriteError(ErrUnknownCommand)
+	}
+
+	if parts[1].Type != BulkString || parts[2].Type != BulkString || parts[3].Type != BulkString {
+		return h.writer.WriteError(ErrUnknownCommand)
+	}
+
+	key := parts[1].Value.(string)
+	startStr := parts[2].Value.(string)
+	endStr := parts[3].Value.(string)
+
+	start, err := strconv.Atoi(startStr)
+	if err != nil {
+		return h.writer.WriteError(ErrUnknownCommand)
+	}
+
+	end, err := strconv.Atoi(endStr)
+	if err != nil {
+		return h.writer.WriteError(ErrUnknownCommand)
+	}
+
+	items, exists := h.store.LRange(key, start, end)
+	if !exists {
+		return h.writer.WriteEmptyArray()
+	}
+
+	return h.writer.WriteArray(items)
+}
+
+// LLenHandler handles LLEN commands
+type LLenHandler struct {
+	store  ListStore
+	writer ResponseWriter
+}
+
+func NewLLenHandler(store ListStore, writer ResponseWriter) *LLenHandler {
+	return &LLenHandler{store: store, writer: writer}
+}
+
+func (h *LLenHandler) Handle(parts []RespValue, conn net.Conn) error {
+	if len(parts) != 2 {
+		return h.writer.WriteError(ErrUnknownCommand)
+	}
+
+	if parts[1].Type != BulkString {
+		return h.writer.WriteError(ErrUnknownCommand)
+	}
+
+	key := parts[1].Value.(string)
+	length, exists := h.store.LLen(key)
+
+	if !exists {
+		return h.writer.WriteInteger(0)
+	}
+
+	return h.writer.WriteInteger(length)
+}
+
+// BLPopHandler handles BLPOP commands
+type BLPopHandler struct {
+	store  ListStore
+	writer ResponseWriter
+}
+
+func NewBLPopHandler(store ListStore, writer ResponseWriter) *BLPopHandler {
+	return &BLPopHandler{store: store, writer: writer}
+}
+
+func (h *BLPopHandler) Handle(parts []RespValue, conn net.Conn) error {
+	if len(parts) < 3 {
+		return h.writer.WriteError("ERR wrong number of arguments for 'blpop' command")
+	}
+
+	// Last argument is timeout
 	timeoutStr, ok := parts[len(parts)-1].Value.(string)
 	if !ok || parts[len(parts)-1].Type != BulkString {
-		_, err := conn.Write([]byte("-ERR timeout is not a float or out of range\r\n"))
-		if err != nil {
-			return
-		}
-		return
+		return h.writer.WriteError("ERR timeout is not a float or out of range")
 	}
 
-	var timeoutSeconds float64
-	_, err := fmt.Sscanf(timeoutStr, "%f", &timeoutSeconds)
+	timeoutSeconds, err := strconv.ParseFloat(timeoutStr, 64)
 	if err != nil || timeoutSeconds < 0 {
-		_, err := conn.Write([]byte("-ERR timeout is not a float or out of range\r\n"))
-		if err != nil {
-			return
-		}
-		return
+		return h.writer.WriteError("ERR timeout is not a float or out of range")
 	}
 
-	// Extract keys (all parts except command and timeout)
+	// Extract keys
 	keys := make([]string, 0, len(parts)-2)
 	for i := 1; i < len(parts)-1; i++ {
 		if parts[i].Type != BulkString {
-			_, err := conn.Write([]byte("-ERR wrong number of arguments for 'blpop' command\r\n"))
-			if err != nil {
-				return
-			}
-			return
+			return h.writer.WriteError("ERR wrong number of arguments for 'blpop' command")
 		}
 		keys = append(keys, parts[i].Value.(string))
 	}
 
-	// Try to pop from any of the keys immediately
+	// Try immediate pop
 	for _, key := range keys {
-		value, exists := lpopValue(key)
-		if exists {
-			// Found a value, return it immediately
-			response := fmt.Sprintf("*2\r\n$%d\r\n%s\r\n$%d\r\n%s\r\n", len(key), key, len(value), value)
-			_, err := conn.Write([]byte(response))
-			if err != nil {
-				return
-			}
-			return
+		values, exists := h.store.LPop(key)
+		if exists && len(values) > 0 {
+			result := []string{key, values[0]}
+			return h.writer.WriteArray(result)
 		}
 	}
 
-	// No values found, need to block
+	// Block with timeout
 	if timeoutSeconds == 0 {
 		// Block indefinitely
 		for {
 			for _, key := range keys {
-				value, exists := lpopValue(key)
-				if exists {
-					response := fmt.Sprintf("*2\r\n$%d\r\n%s\r\n$%d\r\n%s\r\n", len(key), key, len(value), value)
-					_, err := conn.Write([]byte(response))
-					if err != nil {
-						return
-					}
-					return
+				values, exists := h.store.LPop(key)
+				if exists && len(values) > 0 {
+					result := []string{key, values[0]}
+					return h.writer.WriteArray(result)
 				}
 			}
-			// Sleep briefly to avoid busy waiting
 			time.Sleep(10 * time.Millisecond)
 		}
 	} else {
@@ -514,39 +403,16 @@ func handleBLPop(parts []RespValue, conn net.Conn) {
 
 		for time.Now().Before(deadline) {
 			for _, key := range keys {
-				value, exists := lpopValue(key)
-				if exists {
-					response := fmt.Sprintf("*2\r\n$%d\r\n%s\r\n$%d\r\n%s\r\n", len(key), key, len(value), value)
-					_, err := conn.Write([]byte(response))
-					if err != nil {
-						return
-					}
-					return
+				values, exists := h.store.LPop(key)
+				if exists && len(values) > 0 {
+					result := []string{key, values[0]}
+					return h.writer.WriteArray(result)
 				}
 			}
-			// Sleep briefly to avoid busy waiting
 			time.Sleep(10 * time.Millisecond)
 		}
 
-		// Timeout reached, return null
-		_, err := conn.Write([]byte("*-1\r\n"))
-		if err != nil {
-			return
-		}
-	}
-}
-
-func contains(commands []string, value string) bool {
-	for _, cmd := range commands {
-		if cmd == value {
-			return true
-		}
-	}
-	return false
-}
-
-func printArgs(parts []RespValue) {
-	for index, part := range parts {
-		fmt.Printf("Arg %d: Type %d, Value %v\n", index, part.Type, part.Value)
+		// Timeout reached
+		return h.writer.WriteNullArray()
 	}
 }
