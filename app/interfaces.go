@@ -36,6 +36,7 @@ type ResponseWriter interface {
 	WriteNullArray() error
 	WriteEmptyArray() error
 	WriteStreamEntries(entries []StreamEntry) error
+	WriteStreamReadResults(results []StreamReadResult) error
 }
 
 // Command processor interface

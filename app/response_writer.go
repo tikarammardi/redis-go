@@ -88,3 +88,40 @@ func (w *RespResponseWriter) WriteStreamEntries(entries []StreamEntry) error {
 	_, err := w.conn.Write([]byte(response))
 	return err
 }
+
+func (w *RespResponseWriter) WriteStreamReadResults(results []StreamReadResult) error {
+	// Write array length for number of streams with results
+	response := fmt.Sprintf("*%d\r\n", len(results))
+
+	for _, result := range results {
+		// Each result is an array of 2 elements: [stream_key, [entries...]]
+		response += "*2\r\n" // Array of 2 elements
+
+		// First element: the stream key as bulk string
+		response += fmt.Sprintf("$%d\r\n%s\r\n", len(result.Key), result.Key)
+
+		// Second element: array of entries
+		response += fmt.Sprintf("*%d\r\n", len(result.Entries))
+
+		for _, entry := range result.Entries {
+			// Each entry is an array of 2 elements: [id, [field1, value1, field2, value2, ...]]
+			response += "*2\r\n" // Array of 2 elements
+
+			// First element: the ID as bulk string
+			response += fmt.Sprintf("$%d\r\n%s\r\n", len(entry.ID), entry.ID)
+
+			// Second element: array of field-value pairs
+			fieldCount := len(entry.Fields) * 2 // Each field has name and value
+			response += fmt.Sprintf("*%d\r\n", fieldCount)
+
+			// Add field-value pairs in order
+			for field, value := range entry.Fields {
+				response += fmt.Sprintf("$%d\r\n%s\r\n", len(field), field)
+				response += fmt.Sprintf("$%d\r\n%s\r\n", len(value), value)
+			}
+		}
+	}
+
+	_, err := w.conn.Write([]byte(response))
+	return err
+}

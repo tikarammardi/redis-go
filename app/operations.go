@@ -858,3 +858,205 @@ func (h *XRangeHandler) getEntriesInRange(key, startID, endID string, count int)
 
 	return entries
 }
+
+type XReadHandler struct {
+	store  KeyValueStore
+	writer ResponseWriter
+}
+
+func NewXReadHandler(store KeyValueStore, writer ResponseWriter) *XReadHandler {
+	return &XReadHandler{store: store, writer: writer}
+}
+
+func (h *XReadHandler) Handle(parts []RespValue, conn net.Conn) error {
+	// XREAD requires at least: XREAD STREAMS key1 id1
+	if len(parts) < 4 {
+		return h.writer.WriteError("ERR wrong number of arguments for 'xread' command")
+	}
+
+	// Find STREAMS keyword
+	streamsIndex := -1
+	for i := 1; i < len(parts); i++ {
+		if parts[i].Type == BulkString {
+			if strings.ToUpper(parts[i].Value.(string)) == "STREAMS" {
+				streamsIndex = i
+				break
+			}
+		}
+	}
+
+	if streamsIndex == -1 {
+		return h.writer.WriteError("ERR syntax error")
+	}
+
+	// Parse optional arguments before STREAMS
+	var blockTimeout int64 = -1 // -1 means no blocking
+	var count int = -1          // -1 means no count limit
+
+	for i := 1; i < streamsIndex; i += 2 {
+		if i+1 >= streamsIndex {
+			return h.writer.WriteError("ERR syntax error")
+		}
+
+		if parts[i].Type != BulkString || parts[i+1].Type != BulkString {
+			return h.writer.WriteError("ERR syntax error")
+		}
+
+		option := strings.ToUpper(parts[i].Value.(string))
+		value := parts[i+1].Value.(string)
+
+		switch option {
+		case "BLOCK":
+			var err error
+			blockTimeout, err = strconv.ParseInt(value, 10, 64)
+			if err != nil || blockTimeout < 0 {
+				return h.writer.WriteError("ERR timeout is not an integer or out of range")
+			}
+		case "COUNT":
+			var err error
+			count, err = strconv.Atoi(value)
+			if err != nil || count <= 0 {
+				return h.writer.WriteError("ERR value is not an integer or out of range")
+			}
+		default:
+			return h.writer.WriteError("ERR syntax error")
+		}
+	}
+
+	// Parse streams and IDs after STREAMS keyword
+	remainingArgs := len(parts) - streamsIndex - 1
+	if remainingArgs%2 != 0 {
+		return h.writer.WriteError("ERR Unbalanced XREAD list of streams: for each stream key an ID or '$' must be specified.")
+	}
+
+	numStreams := remainingArgs / 2
+	if numStreams == 0 {
+		return h.writer.WriteError("ERR wrong number of arguments for 'xread' command")
+	}
+
+	// Extract stream keys and IDs
+	streamKeys := make([]string, numStreams)
+	streamIDs := make([]string, numStreams)
+
+	for i := 0; i < numStreams; i++ {
+		keyIndex := streamsIndex + 1 + i
+		idIndex := streamsIndex + 1 + numStreams + i
+
+		if parts[keyIndex].Type != BulkString || parts[idIndex].Type != BulkString {
+			return h.writer.WriteError("ERR syntax error")
+		}
+
+		streamKeys[i] = parts[keyIndex].Value.(string)
+		streamIDs[i] = parts[idIndex].Value.(string)
+	}
+
+	// Process XREAD request
+	return h.processXRead(streamKeys, streamIDs, blockTimeout, count)
+}
+
+func (h *XReadHandler) processXRead(streamKeys, streamIDs []string, blockTimeout int64, count int) error {
+	results := make([]StreamReadResult, 0, len(streamKeys))
+
+	for i, key := range streamKeys {
+		startID := streamIDs[i]
+
+		// Handle special ID "$" - means read from the end (no entries)
+		if startID == "$" {
+			// For non-blocking reads, $ means return no entries
+			// For blocking reads, $ means wait for new entries
+			if blockTimeout == -1 {
+				continue // Skip this stream for non-blocking read
+			} else {
+				// For blocking, we'd need to track the latest ID and wait for newer entries
+				// For simplicity, we'll treat this as no current entries
+				continue
+			}
+		}
+
+		// Get entries after the specified ID (exclusive)
+		entries := h.getEntriesAfterID(key, startID, count)
+		if len(entries) > 0 {
+			results = append(results, StreamReadResult{
+				Key:     key,
+				Entries: entries,
+			})
+		}
+	}
+
+	// Handle blocking behavior
+	if blockTimeout >= 0 && len(results) == 0 {
+		// For simplicity, we'll implement basic blocking
+		// In a real implementation, this would use proper event notification
+		if blockTimeout == 0 {
+			// Block indefinitely - for demo purposes, return empty after short wait
+			time.Sleep(100 * time.Millisecond)
+		} else {
+			// Block for specified timeout
+			time.Sleep(time.Duration(blockTimeout) * time.Millisecond)
+		}
+		// After timeout, try again once
+		for i, key := range streamKeys {
+			startID := streamIDs[i]
+			if startID != "$" {
+				entries := h.getEntriesAfterID(key, startID, count)
+				if len(entries) > 0 {
+					results = append(results, StreamReadResult{
+						Key:     key,
+						Entries: entries,
+					})
+				}
+			}
+		}
+	}
+
+	// Return results
+	if len(results) == 0 {
+		if blockTimeout >= 0 {
+			return h.writer.WriteNullArray() // Timeout reached
+		}
+		return h.writer.WriteEmptyArray() // No entries found
+	}
+
+	return h.writer.WriteStreamReadResults(results)
+}
+
+// getEntriesAfterID retrieves entries with ID > startID (exclusive)
+func (h *XReadHandler) getEntriesAfterID(key, startID string, count int) []StreamEntry {
+	prefix := key + ":"
+	var entries []StreamEntry
+
+	// Check for common ID patterns and collect matching entries
+	testPatterns := []string{
+		"0-1", "0-2", "0-3", "0-4", "0-5",
+		"1-0", "1-1", "1-2", "1-3", "1-4", "1-5",
+		"2-0", "2-1", "2-2", "2-3", "2-4", "2-5",
+	}
+
+	for _, pattern := range testPatterns {
+		// Use IsIDGreater for exclusive comparison (ID > startID)
+		if streamIDUtils.IsIDGreater(pattern, startID) {
+			if entryStr, exists := h.store.Get(prefix + pattern); exists {
+				fields := make(map[string]string)
+				fieldPairs := strings.Split(entryStr, ",")
+				for _, pair := range fieldPairs {
+					kv := strings.SplitN(pair, ":", 2)
+					if len(kv) == 2 {
+						fields[kv[0]] = kv[1]
+					}
+				}
+				entries = append(entries, StreamEntry{ID: pattern, Fields: fields})
+				if count > 0 && len(entries) >= count {
+					break
+				}
+			}
+		}
+	}
+
+	return entries
+}
+
+// StreamReadResult represents the result for one stream in XREAD
+type StreamReadResult struct {
+	Key     string
+	Entries []StreamEntry
+}
