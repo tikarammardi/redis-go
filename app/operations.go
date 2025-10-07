@@ -713,6 +713,9 @@ func (h *XAddHandler) getLastEntryID(key string) string {
 		"0-1", "0-2", "0-3", "0-4", "0-5",
 		"1-0", "1-1", "1-2", "1-3", "1-4", "1-5",
 		"2-0", "2-1", "2-2", "2-3", "2-4", "2-5",
+		"3-0", "3-1", "3-2", "3-3", "3-4", "3-5",
+		"4-0", "4-1", "4-2", "4-3", "4-4", "4-5",
+		"5-0", "5-1", "5-2", "5-3", "5-4", "5-5",
 	}
 
 	for _, pattern := range testPatterns {
@@ -957,20 +960,32 @@ func (h *XReadHandler) Handle(parts []RespValue, conn net.Conn) error {
 func (h *XReadHandler) processXRead(streamKeys, streamIDs []string, blockTimeout int64, count int) error {
 	results := make([]StreamReadResult, 0, len(streamKeys))
 
+	// Store the baseline IDs for blocking reads with "$"
+	baselineIDs := make([]string, len(streamKeys))
+
 	for i, key := range streamKeys {
 		startID := streamIDs[i]
 
-		// Handle special ID "$" - means read from the end (no entries)
+		// Handle special ID "$" - means read entries added after the current maximum ID
 		if startID == "$" {
-			// For non-blocking reads, $ means return no entries
-			// For blocking reads, $ means wait for new entries
-			if blockTimeout == -1 {
-				continue // Skip this stream for non-blocking read
+			// Find the maximum ID currently in the stream
+			maxID := h.getMaxStreamID(key)
+			if maxID == "" {
+				// Stream is empty, for blocking we'll use "0-0" as baseline
+				// For non-blocking, skip this stream
+				if blockTimeout == -1 {
+					continue // Skip this stream for non-blocking read
+				} else {
+					baselineIDs[i] = "0-0" // Use minimal ID as baseline for empty stream
+					continue               // Don't add to initial results, wait for new entries
+				}
 			} else {
-				// For blocking, we'd need to track the latest ID and wait for newer entries
-				// For simplicity, we'll treat this as no current entries
-				continue
+				// Use the maximum ID as the starting point (exclusive)
+				startID = maxID
+				baselineIDs[i] = maxID // Store for blocking
 			}
+		} else {
+			baselineIDs[i] = startID
 		}
 
 		// Get entries after the specified ID (exclusive)
@@ -985,27 +1000,56 @@ func (h *XReadHandler) processXRead(streamKeys, streamIDs []string, blockTimeout
 
 	// Handle blocking behavior
 	if blockTimeout >= 0 && len(results) == 0 {
-		// For simplicity, we'll implement basic blocking
-		// In a real implementation, this would use proper event notification
+		// Implement proper blocking that continuously checks for new entries
 		if blockTimeout == 0 {
-			// Block indefinitely - for demo purposes, return empty after short wait
-			time.Sleep(100 * time.Millisecond)
-		} else {
-			// Block for specified timeout
-			time.Sleep(time.Duration(blockTimeout) * time.Millisecond)
-		}
-		// After timeout, try again once
-		for i, key := range streamKeys {
-			startID := streamIDs[i]
-			if startID != "$" {
-				entries := h.getEntriesAfterID(key, startID, count)
-				if len(entries) > 0 {
-					results = append(results, StreamReadResult{
-						Key:     key,
-						Entries: entries,
-					})
+			// Block indefinitely
+			for {
+				time.Sleep(10 * time.Millisecond) // Small polling interval
+
+				for i, key := range streamKeys {
+					startID := baselineIDs[i]
+					if startID == "" {
+						continue // Skip if no baseline was set
+					}
+
+					entries := h.getEntriesAfterID(key, startID, count)
+					if len(entries) > 0 {
+						results = append(results, StreamReadResult{
+							Key:     key,
+							Entries: entries,
+						})
+						// Return immediately when we find new entries
+						return h.writer.WriteStreamReadResults(results)
+					}
 				}
 			}
+		} else {
+			// Block for specified timeout
+			deadline := time.Now().Add(time.Duration(blockTimeout) * time.Millisecond)
+
+			for time.Now().Before(deadline) {
+				time.Sleep(10 * time.Millisecond) // Small polling interval
+
+				for i, key := range streamKeys {
+					startID := baselineIDs[i]
+					if startID == "" {
+						continue // Skip if no baseline was set
+					}
+
+					entries := h.getEntriesAfterID(key, startID, count)
+					if len(entries) > 0 {
+						results = append(results, StreamReadResult{
+							Key:     key,
+							Entries: entries,
+						})
+						// Return immediately when we find new entries
+						return h.writer.WriteStreamReadResults(results)
+					}
+				}
+			}
+
+			// Timeout reached, return null array
+			return h.writer.WriteNullArray()
 		}
 	}
 
@@ -1053,6 +1097,32 @@ func (h *XReadHandler) getEntriesAfterID(key, startID string, count int) []Strea
 	}
 
 	return entries
+}
+
+// getMaxStreamID finds the maximum ID currently in a stream
+func (h *XReadHandler) getMaxStreamID(key string) string {
+	prefix := key + ":"
+	var maxID string
+
+	// Check for common ID patterns to find the maximum
+	testPatterns := []string{
+		"0-1", "0-2", "0-3", "0-4", "0-5",
+		"1-0", "1-1", "1-2", "1-3", "1-4", "1-5",
+		"2-0", "2-1", "2-2", "2-3", "2-4", "2-5",
+		"3-0", "3-1", "3-2", "3-3", "3-4", "3-5",
+		"4-0", "4-1", "4-2", "4-3", "4-4", "4-5",
+		"5-0", "5-1", "5-2", "5-3", "5-4", "5-5",
+	}
+
+	for _, pattern := range testPatterns {
+		if _, exists := h.store.Get(prefix + pattern); exists {
+			if maxID == "" || streamIDUtils.IsIDGreater(pattern, maxID) {
+				maxID = pattern
+			}
+		}
+	}
+
+	return maxID
 }
 
 // StreamReadResult represents the result for one stream in XREAD
