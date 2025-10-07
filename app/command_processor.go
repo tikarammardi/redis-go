@@ -43,6 +43,7 @@ func (p *RedisCommandProcessor) registerHandlers(kvStore KeyValueStore, listStor
 	p.handlers["BLPOP"] = NewBLPopHandler(listStore, writer)
 	p.handlers["TYPE"] = NewTypeHandler(kvStore, listStore, writer)
 	p.handlers["XADD"] = NewXAddHandler(kvStore, writer)
+	p.handlers["XRANGE"] = NewXRangeHandler(kvStore, writer)
 }
 
 func (p *RedisCommandProcessor) Process(command RespValue, conn net.Conn) error {
@@ -107,6 +108,8 @@ func (p *RedisCommandProcessor) updateHandlerWriter(handler CommandHandler, writ
 	case *TypeHandler:
 		h.writer = writer
 	case *XAddHandler:
+		h.writer = writer
+	case *XRangeHandler:
 		h.writer = writer
 	}
 }

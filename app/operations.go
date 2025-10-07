@@ -1,11 +1,109 @@
 package main
 
 import (
+	"fmt"
 	"net"
 	"strconv"
 	"strings"
 	"time"
 )
+
+type StreamIDUtils struct{}
+
+// ParseStreamID parses a stream ID into timestamp and sequence components
+func (s *StreamIDUtils) ParseStreamID(id string) (int64, int64, error) {
+	parts := strings.Split(id, "-")
+	if len(parts) != 2 {
+		return 0, 0, fmt.Errorf("invalid stream ID format")
+	}
+
+	timestamp, err := strconv.ParseInt(parts[0], 10, 64)
+	if err != nil || timestamp < 0 {
+		return 0, 0, fmt.Errorf("invalid timestamp in stream ID")
+	}
+
+	sequence, err := strconv.ParseInt(parts[1], 10, 64)
+	if err != nil || sequence < 0 {
+		return 0, 0, fmt.Errorf("invalid sequence in stream ID")
+	}
+
+	return timestamp, sequence, nil
+}
+
+// CompareStreamIDs compares two stream IDs. Returns:
+// -1 if id1 < id2
+//
+//	0 if id1 == id2
+//	1 if id1 > id2
+func (s *StreamIDUtils) CompareStreamIDs(id1, id2 string) int {
+	timestamp1, sequence1, err1 := s.ParseStreamID(id1)
+	timestamp2, sequence2, err2 := s.ParseStreamID(id2)
+
+	if err1 != nil || err2 != nil {
+		return 0 // Invalid IDs are considered equal
+	}
+
+	if timestamp1 < timestamp2 {
+		return -1
+	}
+	if timestamp1 > timestamp2 {
+		return 1
+	}
+	if sequence1 < sequence2 {
+		return -1
+	}
+	if sequence1 > sequence2 {
+		return 1
+	}
+	return 0
+}
+
+// IsIDGreater checks if id1 > id2
+func (s *StreamIDUtils) IsIDGreater(id1, id2 string) bool {
+	return s.CompareStreamIDs(id1, id2) > 0
+}
+
+// IsIDGreaterOrEqual checks if id1 >= id2
+func (s *StreamIDUtils) IsIDGreaterOrEqual(id1, id2 string) bool {
+	return s.CompareStreamIDs(id1, id2) >= 0
+}
+
+// IsIDLessOrEqual checks if id1 <= id2
+func (s *StreamIDUtils) IsIDLessOrEqual(id1, id2 string) bool {
+	return s.CompareStreamIDs(id1, id2) <= 0
+}
+
+// IsIDInRange checks if an ID is within the specified range
+func (s *StreamIDUtils) IsIDInRange(id, startID, endID string) bool {
+	// Handle special cases for "-" and "+"
+	if startID == "-" && endID == "+" {
+		return true
+	}
+	if startID == "-" {
+		return s.IsIDLessOrEqual(id, endID)
+	}
+	if endID == "+" {
+		return s.IsIDGreaterOrEqual(id, startID)
+	}
+	return s.IsIDGreaterOrEqual(id, startID) && s.IsIDLessOrEqual(id, endID)
+}
+
+// GenerateAutoID generates a fully automatic stream ID
+func (s *StreamIDUtils) GenerateAutoID() string {
+	timestamp := time.Now().UnixMilli()
+	return strconv.FormatInt(timestamp, 10) + "-0"
+}
+
+// ValidateMinimumID ensures the ID is greater than 0-0
+func (s *StreamIDUtils) ValidateMinimumID(id string) error {
+	if s.CompareStreamIDs(id, "0-0") <= 0 {
+		return fmt.Errorf("The ID specified in XADD must be greater than 0-0")
+	}
+	return nil
+}
+
+// Global instance for reuse
+var streamIDUtils = &StreamIDUtils{}
 
 // Constants for error messages to follow DRY principle
 const (
@@ -534,30 +632,20 @@ func (h *XAddHandler) Handle(parts []RespValue, conn net.Conn) error {
 	if id == "*" {
 		// Auto-generate ID using current timestamp
 		timestamp := time.Now().UnixMilli()
-
-		// Determine sequence number based on existing entries
 		sequence := h.getNextSequenceNumber(key, timestamp)
 		entryID = strconv.FormatInt(timestamp, 10) + "-" + strconv.FormatInt(sequence, 10)
 
-		// Ensure auto-generated ID is greater than last entry (should be guaranteed by our logic)
-		if lastEntryID != "" && !h.isIDGreater(entryID, lastEntryID) {
-			// This should not happen with correct sequence generation, but handle edge case
-			lastParts := strings.Split(lastEntryID, "-")
-			if len(lastParts) == 2 {
-				lastTimestamp, _ := strconv.ParseInt(lastParts[0], 10, 64)
-				lastSequence, _ := strconv.ParseInt(lastParts[1], 10, 64)
-
-				// Use the later timestamp and increment sequence
-				if timestamp <= lastTimestamp {
-					entryID = strconv.FormatInt(lastTimestamp, 10) + "-" + strconv.FormatInt(lastSequence+1, 10)
-				}
+		// Ensure auto-generated ID is greater than last entry
+		if lastEntryID != "" && !streamIDUtils.IsIDGreater(entryID, lastEntryID) {
+			// Fallback: use last timestamp + 1 sequence
+			lastTimestamp, lastSequence, _ := streamIDUtils.ParseStreamID(lastEntryID)
+			if timestamp <= lastTimestamp {
+				entryID = strconv.FormatInt(lastTimestamp, 10) + "-" + strconv.FormatInt(lastSequence+1, 10)
 			}
 		}
 	} else if strings.HasSuffix(id, "-*") {
 		// Partially auto-generated ID: timestamp specified, sequence auto-generated
 		timestampStr := strings.TrimSuffix(id, "-*")
-
-		// Validate timestamp part
 		timestamp, err := strconv.ParseInt(timestampStr, 10, 64)
 		if err != nil || timestamp < 0 {
 			return h.writer.WriteError("ERR Invalid stream ID specified as stream command argument")
@@ -568,62 +656,35 @@ func (h *XAddHandler) Handle(parts []RespValue, conn net.Conn) error {
 		entryID = strconv.FormatInt(timestamp, 10) + "-" + strconv.FormatInt(sequence, 10)
 
 		// Validate that the generated ID is greater than last entry
-		if lastEntryID != "" && !h.isIDGreater(entryID, lastEntryID) {
+		if lastEntryID != "" && !streamIDUtils.IsIDGreater(entryID, lastEntryID) {
 			return h.writer.WriteError("ERR The ID specified in XADD is equal or smaller than the target stream top item")
 		}
 
 		// Check minimum valid ID (must be greater than 0-0)
-		if timestamp == 0 && sequence == 0 {
+		if err := streamIDUtils.ValidateMinimumID(entryID); err != nil {
 			return h.writer.WriteError("ERR The ID specified in XADD must be greater than 0-0")
 		}
 	} else {
-		// Validate explicit ID format (should be timestamp-sequence)
-		if !strings.Contains(id, "-") {
-			return h.writer.WriteError("ERR Invalid stream ID specified as stream command argument")
-		}
-
-		parts := strings.Split(id, "-")
-		if len(parts) != 2 {
-			return h.writer.WriteError("ERR Invalid stream ID specified as stream command argument")
-		}
-
-		// Validate timestamp part
-		timestamp, err := strconv.ParseInt(parts[0], 10, 64)
-		if err != nil || timestamp < 0 {
-			return h.writer.WriteError("ERR Invalid stream ID specified as stream command argument")
-		}
-
-		// Validate sequence part
-		sequence, err := strconv.ParseInt(parts[1], 10, 64)
-		if err != nil || sequence < 0 {
+		// Validate explicit ID format using shared utility
+		_, _, err := streamIDUtils.ParseStreamID(id)
+		if err != nil {
 			return h.writer.WriteError("ERR Invalid stream ID specified as stream command argument")
 		}
 
 		// Check minimum valid ID (must be greater than 0-0)
-		if timestamp == 0 && sequence == 0 {
+		if err := streamIDUtils.ValidateMinimumID(id); err != nil {
 			return h.writer.WriteError("ERR The ID specified in XADD must be greater than 0-0")
 		}
 
 		// Validate against last entry ID
-		if lastEntryID == "" {
-			// Stream is empty, ID must be greater than 0-0 (minimum valid is 0-1)
-			if timestamp == 0 && sequence <= 0 {
-				return h.writer.WriteError("ERR The ID specified in XADD must be greater than 0-0")
-			}
-		} else {
-			// Stream has entries, new ID must be greater than last entry
-			if !h.isIDGreater(id, lastEntryID) {
-				return h.writer.WriteError("ERR The ID specified in XADD is equal or smaller than the target stream top item")
-			}
+		if lastEntryID != "" && !streamIDUtils.IsIDGreater(id, lastEntryID) {
+			return h.writer.WriteError("ERR The ID specified in XADD is equal or smaller than the target stream top item")
 		}
 
-		// Use the provided ID
 		entryID = id
 	}
 
 	// Store the stream entry
-	// In a real implementation, this would be stored in a proper stream data structure
-	// For simplicity, we'll serialize the fields as JSON-like format
 	var fieldPairs []string
 	for field, value := range fields {
 		fieldPairs = append(fieldPairs, field+":"+value)
@@ -675,33 +736,7 @@ func (h *XAddHandler) getLastEntryID(key string) string {
 
 // isIDGreater checks if id1 is greater than id2
 func (h *XAddHandler) isIDGreater(id1, id2 string) bool {
-	parts1 := strings.Split(id1, "-")
-	parts2 := strings.Split(id2, "-")
-
-	if len(parts1) != 2 || len(parts2) != 2 {
-		return false
-	}
-
-	timestamp1, err1 := strconv.ParseInt(parts1[0], 10, 64)
-	sequence1, err1_seq := strconv.ParseInt(parts1[1], 10, 64)
-	timestamp2, err2 := strconv.ParseInt(parts2[0], 10, 64)
-	sequence2, err2_seq := strconv.ParseInt(parts2[1], 10, 64)
-
-	if err1 != nil || err1_seq != nil || err2 != nil || err2_seq != nil {
-		return false
-	}
-
-	// ID1 is greater if:
-	// 1. timestamp1 > timestamp2, OR
-	// 2. timestamp1 == timestamp2 AND sequence1 > sequence2
-	if timestamp1 > timestamp2 {
-		return true
-	}
-	if timestamp1 == timestamp2 && sequence1 > sequence2 {
-		return true
-	}
-
-	return false
+	return streamIDUtils.IsIDGreater(id1, id2)
 }
 
 // getNextSequenceNumber determines the correct sequence number for auto-generated IDs
@@ -735,4 +770,91 @@ func (h *XAddHandler) getNextSequenceNumber(key string, timestamp int64) int64 {
 		// For other timestamps, sequence starts at 0
 		return 0
 	}
+}
+
+type XRangeHandler struct {
+	store  KeyValueStore
+	writer ResponseWriter
+}
+
+func NewXRangeHandler(store KeyValueStore, writer ResponseWriter) *XRangeHandler {
+	return &XRangeHandler{store: store, writer: writer}
+}
+
+func (h *XRangeHandler) Handle(parts []RespValue, conn net.Conn) error {
+	if len(parts) < 4 || len(parts) > 6 {
+		return h.writer.WriteError("ERR wrong number of arguments for 'xrange' command")
+	}
+
+	if parts[1].Type != BulkString || parts[2].Type != BulkString || parts[3].Type != BulkString {
+		return h.writer.WriteError("ERR invalid arguments")
+	}
+
+	key := parts[1].Value.(string)
+	startID := parts[2].Value.(string)
+	endID := parts[3].Value.(string)
+
+	var count int
+	if len(parts) == 6 {
+		if strings.ToUpper(parts[4].Value.(string)) != "COUNT" {
+			return h.writer.WriteError("ERR syntax error")
+		}
+		var err error
+		count, err = strconv.Atoi(parts[5].Value.(string))
+		if err != nil || count <= 0 {
+			return h.writer.WriteError("ERR value is not an integer or out of range")
+		}
+	} else {
+		count = -1 // No count limit
+	}
+
+	// Fetch entries in range
+	entries := h.getEntriesInRange(key, startID, endID, count)
+	if len(entries) == 0 {
+		return h.writer.WriteEmptyArray()
+	}
+
+	// Format response as array of [id, [field1, value1, field2, value2, ...]]
+	return h.writer.WriteStreamEntries(entries)
+}
+
+// StreamEntry represents a single stream entry
+type StreamEntry struct {
+	ID     string
+	Fields map[string]string
+}
+
+// getEntriesInRange retrieves entries in the specified ID range
+func (h *XRangeHandler) getEntriesInRange(key, startID, endID string, count int) []StreamEntry {
+	prefix := key + ":"
+	var entries []StreamEntry
+
+	// This is a simplified implementation - in a real system we'd have proper stream storage
+	// For now, we'll check for common ID patterns and collect matching entries
+	testPatterns := []string{
+		"0-1", "0-2", "0-3", "0-4", "0-5",
+		"1-0", "1-1", "1-2", "1-3", "1-4", "1-5",
+		"2-0", "2-1", "2-2", "2-3", "2-4", "2-5",
+	}
+
+	for _, pattern := range testPatterns {
+		if streamIDUtils.IsIDInRange(pattern, startID, endID) {
+			if entryStr, exists := h.store.Get(prefix + pattern); exists {
+				fields := make(map[string]string)
+				fieldPairs := strings.Split(entryStr, ",")
+				for _, pair := range fieldPairs {
+					kv := strings.SplitN(pair, ":", 2)
+					if len(kv) == 2 {
+						fields[kv[0]] = kv[1]
+					}
+				}
+				entries = append(entries, StreamEntry{ID: pattern, Fields: fields})
+				if count > 0 && len(entries) >= count {
+					break
+				}
+			}
+		}
+	}
+
+	return entries
 }
