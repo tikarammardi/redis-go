@@ -1192,3 +1192,20 @@ func (h *MultiHandler) Handle(parts []RespValue, conn net.Conn) error {
 
 	return h.writer.WriteSimpleString("OK")
 }
+
+type ExecHandler struct {
+	store  KeyValueStore
+	writer ResponseWriter
+}
+
+func NewExecHandler(store KeyValueStore, writer ResponseWriter) *ExecHandler {
+	return &ExecHandler{store: store, writer: writer}
+}
+
+func (h *ExecHandler) Handle(parts []RespValue, conn net.Conn) error {
+	if len(parts) != 1 {
+		return h.writer.WriteError(ErrUnknownCommand)
+	}
+
+	return h.writer.WriteError("ERR EXEC without MULTI")
+}
