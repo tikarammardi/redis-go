@@ -2,9 +2,11 @@ package main
 
 import (
 	"bufio"
+	"flag"
 	"fmt"
 	"net"
 	"os"
+	"strconv"
 	"strings"
 )
 
@@ -97,10 +99,16 @@ func (s *RedisServer) handleConnection(conn net.Conn) {
 func main() {
 	fmt.Println("Logs from your program will appear here!")
 
+	// Parse command line flags
+	var port int
+	flag.IntVar(&port, "port", 6379, "Port to bind the Redis server to")
+	flag.Parse()
+
 	// Create and start the server
 	server := NewRedisServer()
 
-	err := server.Start("0.0.0.0:6379")
+	address := "0.0.0.0:" + strconv.Itoa(port)
+	err := server.Start(address)
 	if err != nil {
 		fmt.Printf("Failed to start server: %v\n", err)
 		os.Exit(1)
