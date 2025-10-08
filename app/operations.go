@@ -1200,12 +1200,18 @@ func (h *MultiHandler) Handle(parts []RespValue, conn net.Conn) error {
 }
 
 type ExecHandler struct {
-	store  KeyValueStore
-	writer ResponseWriter
+	store     KeyValueStore
+	writer    ResponseWriter
+	processor *RedisCommandProcessor
 }
 
 func NewExecHandler(store KeyValueStore, writer ResponseWriter) *ExecHandler {
 	return &ExecHandler{store: store, writer: writer}
+}
+
+// SetProcessor allows the command processor to be injected
+func (h *ExecHandler) SetProcessor(processor *RedisCommandProcessor) {
+	h.processor = processor
 }
 
 func (h *ExecHandler) Handle(parts []RespValue, conn net.Conn) error {
@@ -1213,17 +1219,8 @@ func (h *ExecHandler) Handle(parts []RespValue, conn net.Conn) error {
 		return h.writer.WriteError(ErrUnknownCommand)
 	}
 
-	// Check recent MULTI marker
-	// lastMultiMu.Lock()
-	// lt := lastMultiAt
-	// // Clear the timestamp after checking to ensure subsequent EXECs fail
-	// lastMultiAt = time.Time{}
-	// lastMultiMu.Unlock()
-
-	// if !lt.IsZero() && time.Since(lt) <= multiWindow {
-	// 	// No commands queued -> empty array signifies successful empty transaction
-	// 	return h.writer.WriteEmptyArray()
-	// }
-
+	// The actual transaction execution is handled by the command processor
+	// This handler should not be called directly for transaction execution
+	// If we reach here, it means EXEC was called without proper transaction context
 	return h.writer.WriteError("ERR EXEC without MULTI")
 }

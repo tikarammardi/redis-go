@@ -125,3 +125,56 @@ func (w *RespResponseWriter) WriteStreamReadResults(results []StreamReadResult) 
 	_, err := w.conn.Write([]byte(response))
 	return err
 }
+
+func (w *RespResponseWriter) WriteTransactionResults(results []RespValue) error {
+	// Write array header
+	response := fmt.Sprintf("*%d\r\n", len(results))
+
+	// Write each result in the array
+	for _, result := range results {
+		switch result.Type {
+		case SimpleString:
+			response += fmt.Sprintf("+%s\r\n", result.Value)
+		case BulkString:
+			if result.Value == nil {
+				response += "$-1\r\n"
+			} else {
+				s := result.Value.(string)
+				response += fmt.Sprintf("$%d\r\n%s\r\n", len(s), s)
+			}
+		case IntegerType:
+			response += fmt.Sprintf(":%d\r\n", result.Value)
+		case ErrorType:
+			response += fmt.Sprintf("-%s\r\n", result.Value)
+		case ArrayType:
+			if result.Value == nil {
+				response += "*-1\r\n"
+			} else {
+				arrayValues := result.Value.([]RespValue)
+				response += fmt.Sprintf("*%d\r\n", len(arrayValues))
+				// For nested arrays, we need to recursively serialize
+				for _, arrayItem := range arrayValues {
+					switch arrayItem.Type {
+					case BulkString:
+						if arrayItem.Value == nil {
+							response += "$-1\r\n"
+						} else {
+							s := arrayItem.Value.(string)
+							response += fmt.Sprintf("$%d\r\n%s\r\n", len(s), s)
+						}
+					case IntegerType:
+						response += fmt.Sprintf(":%d\r\n", arrayItem.Value)
+					case SimpleString:
+						response += fmt.Sprintf("+%s\r\n", arrayItem.Value)
+					case ErrorType:
+						response += fmt.Sprintf("-%s\r\n", arrayItem.Value)
+						// Add more cases as needed for complex nested structures
+					}
+				}
+			}
+		}
+	}
+
+	_, err := w.conn.Write([]byte(response))
+	return err
+}

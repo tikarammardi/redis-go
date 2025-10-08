@@ -205,25 +205,31 @@ func (p *RedisCommandProcessor) executeTransaction(conn net.Conn, writer Respons
 	}
 
 	// Execute all queued commands and collect results
-	results := make([]string, 0, len(commands))
+	results := make([]RespValue, 0, len(commands))
 
 	for _, queuedCmd := range commands {
-		// Update handler writer for this execution
-		p.updateHandlerWriter(queuedCmd.Handler, writer)
+		// Create a response capture writer to capture the command output
+		captureWriter := NewResponseCapture()
 
-		// Execute the command and capture the result
-		// For now, we'll execute the command normally
-		// In a real implementation, we'd capture the output
+		// Update handler writer to capture response
+		p.updateHandlerWriter(queuedCmd.Handler, captureWriter)
+
+		// Execute the command
 		err := queuedCmd.Handler.Handle(queuedCmd.Parts, conn)
 		if err != nil {
-			results = append(results, "ERR "+err.Error())
+			// If there's an error, add error response to results
+			results = append(results, RespValue{
+				Type:  ErrorType,
+				Value: "ERR " + err.Error(),
+			})
 		} else {
-			results = append(results, "OK") // Simplified result
+			// Add the captured response to results
+			results = append(results, captureWriter.GetResponse())
 		}
 	}
 
-	// Write array of results
-	return writer.WriteArray(results)
+	// Write array of captured responses
+	return writer.WriteTransactionResults(results)
 }
 
 // CleanupConnection removes transaction state when connection closes
@@ -244,3 +250,122 @@ func (d *dummyConnection) RemoteAddr() net.Addr               { return nil }
 func (d *dummyConnection) SetDeadline(t time.Time) error      { return nil }
 func (d *dummyConnection) SetReadDeadline(t time.Time) error  { return nil }
 func (d *dummyConnection) SetWriteDeadline(t time.Time) error { return nil }
+
+// ResponseCapture captures command responses for transaction execution
+type ResponseCapture struct {
+	response RespValue
+}
+
+func NewResponseCapture() *ResponseCapture {
+	return &ResponseCapture{}
+}
+
+func (r *ResponseCapture) WriteSimpleString(s string) error {
+	r.response = RespValue{Type: SimpleString, Value: s}
+	return nil
+}
+
+func (r *ResponseCapture) WriteBulkString(s string) error {
+	r.response = RespValue{Type: BulkString, Value: s}
+	return nil
+}
+
+func (r *ResponseCapture) WriteInteger(i int) error {
+	r.response = RespValue{Type: IntegerType, Value: i}
+	return nil
+}
+
+func (r *ResponseCapture) WriteError(err string) error {
+	r.response = RespValue{Type: ErrorType, Value: err}
+	return nil
+}
+
+func (r *ResponseCapture) WriteArray(items []string) error {
+	arrayItems := make([]RespValue, len(items))
+	for i, item := range items {
+		arrayItems[i] = RespValue{Type: BulkString, Value: item}
+	}
+	r.response = RespValue{Type: ArrayType, Value: arrayItems}
+	return nil
+}
+
+func (r *ResponseCapture) WriteNullBulkString() error {
+	r.response = RespValue{Type: BulkString, Value: nil}
+	return nil
+}
+
+func (r *ResponseCapture) WriteNullArray() error {
+	r.response = RespValue{Type: ArrayType, Value: nil}
+	return nil
+}
+
+func (r *ResponseCapture) WriteEmptyArray() error {
+	r.response = RespValue{Type: ArrayType, Value: []RespValue{}}
+	return nil
+}
+
+func (r *ResponseCapture) WriteStreamEntries(entries []StreamEntry) error {
+	// Convert stream entries to RespValue format
+	arrayItems := make([]RespValue, len(entries))
+	for i, entry := range entries {
+		// Each entry is [id, [field1, value1, field2, value2, ...]]
+		entryArray := make([]RespValue, 2)
+		entryArray[0] = RespValue{Type: BulkString, Value: entry.ID}
+
+		// Create field-value pairs array
+		fieldCount := len(entry.Fields) * 2
+		fieldArray := make([]RespValue, fieldCount)
+		j := 0
+		for field, value := range entry.Fields {
+			fieldArray[j] = RespValue{Type: BulkString, Value: field}
+			fieldArray[j+1] = RespValue{Type: BulkString, Value: value}
+			j += 2
+		}
+		entryArray[1] = RespValue{Type: ArrayType, Value: fieldArray}
+		arrayItems[i] = RespValue{Type: ArrayType, Value: entryArray}
+	}
+	r.response = RespValue{Type: ArrayType, Value: arrayItems}
+	return nil
+}
+
+func (r *ResponseCapture) WriteStreamReadResults(results []StreamReadResult) error {
+	// Convert stream read results to RespValue format
+	arrayItems := make([]RespValue, len(results))
+	for i, result := range results {
+		// Each result is [key, [[id1, [field1, value1, ...]], [id2, [field2, value2, ...]], ...]]
+		resultArray := make([]RespValue, 2)
+		resultArray[0] = RespValue{Type: BulkString, Value: result.Key}
+
+		// Create entries array
+		entriesArray := make([]RespValue, len(result.Entries))
+		for j, entry := range result.Entries {
+			entryArray := make([]RespValue, 2)
+			entryArray[0] = RespValue{Type: BulkString, Value: entry.ID}
+
+			fieldCount := len(entry.Fields) * 2
+			fieldArray := make([]RespValue, fieldCount)
+			k := 0
+			for field, value := range entry.Fields {
+				fieldArray[k] = RespValue{Type: BulkString, Value: field}
+				fieldArray[k+1] = RespValue{Type: BulkString, Value: value}
+				k += 2
+			}
+			entryArray[1] = RespValue{Type: ArrayType, Value: fieldArray}
+			entriesArray[j] = RespValue{Type: ArrayType, Value: entryArray}
+		}
+		resultArray[1] = RespValue{Type: ArrayType, Value: entriesArray}
+		arrayItems[i] = RespValue{Type: ArrayType, Value: resultArray}
+	}
+	r.response = RespValue{Type: ArrayType, Value: arrayItems}
+	return nil
+}
+
+func (r *ResponseCapture) WriteTransactionResults(results []RespValue) error {
+	// This method is not needed for ResponseCapture since it's used to capture individual responses
+	// The transaction results are handled by the actual ResponseWriter
+	return nil
+}
+
+func (r *ResponseCapture) GetResponse() RespValue {
+	return r.response
+}
