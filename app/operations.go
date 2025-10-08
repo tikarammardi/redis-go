@@ -1130,3 +1130,48 @@ type StreamReadResult struct {
 	Key     string
 	Entries []StreamEntry
 }
+
+type IncrHandler struct {
+	store  KeyValueStore
+	writer ResponseWriter
+}
+
+func NewIncrHandler(store KeyValueStore, writer ResponseWriter) *IncrHandler {
+	return &IncrHandler{store: store, writer: writer}
+}
+
+func (h *IncrHandler) Handle(parts []RespValue, conn net.Conn) error {
+	if len(parts) != 2 {
+		return h.writer.WriteError(ErrUnknownCommand)
+	}
+
+	if parts[1].Type != BulkString {
+		return h.writer.WriteError(ErrUnknownCommand)
+	}
+
+	key := parts[1].Value.(string)
+
+	// Get current value
+	currentValue, exists := h.store.Get(key)
+	if !exists {
+		// If key does not exist, initialize to 0
+		currentValue = "0"
+	}
+
+	// Parse current value as integer
+	intValue, err := strconv.Atoi(currentValue)
+	if err != nil {
+		return h.writer.WriteError("ERR value is not an integer or out of range")
+	}
+
+	// Increment value
+	intValue++
+
+	// Store updated value
+	err = h.store.Set(key, strconv.Itoa(intValue))
+	if err != nil {
+		return h.writer.WriteError(ErrUnknownCommand)
+	}
+
+	return h.writer.WriteInteger(intValue)
+}
