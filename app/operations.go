@@ -5,15 +5,7 @@ import (
 	"net"
 	"strconv"
 	"strings"
-	"sync"
 	"time"
-)
-
-// marker for recent MULTI calls
-var (
-	lastMultiAt time.Time
-	lastMultiMu sync.Mutex
-	multiWindow = 1 * time.Second
 )
 
 type StreamIDUtils struct{}
@@ -1185,23 +1177,24 @@ func (h *IncrHandler) Handle(parts []RespValue, conn net.Conn) error {
 }
 
 type MultiHandler struct {
-	store  KeyValueStore
-	writer ResponseWriter
+	store     KeyValueStore
+	writer    ResponseWriter
+	processor *RedisCommandProcessor
 }
 
 func NewMultiHandler(store KeyValueStore, writer ResponseWriter) *MultiHandler {
 	return &MultiHandler{store: store, writer: writer}
 }
 
+// SetProcessor allows the command processor to be injected
+func (h *MultiHandler) SetProcessor(processor *RedisCommandProcessor) {
+	h.processor = processor
+}
+
 func (h *MultiHandler) Handle(parts []RespValue, conn net.Conn) error {
 	if len(parts) != 1 {
 		return h.writer.WriteError(ErrUnknownCommand)
 	}
-
-	// mark the time MULTI was received
-	lastMultiMu.Lock()
-	lastMultiAt = time.Now()
-	lastMultiMu.Unlock()
 
 	return h.writer.WriteSimpleString("OK")
 }
@@ -1221,16 +1214,16 @@ func (h *ExecHandler) Handle(parts []RespValue, conn net.Conn) error {
 	}
 
 	// Check recent MULTI marker
-	lastMultiMu.Lock()
-	lt := lastMultiAt
-	// Clear the timestamp after checking to ensure subsequent EXECs fail
-	lastMultiAt = time.Time{}
-	lastMultiMu.Unlock()
+	// lastMultiMu.Lock()
+	// lt := lastMultiAt
+	// // Clear the timestamp after checking to ensure subsequent EXECs fail
+	// lastMultiAt = time.Time{}
+	// lastMultiMu.Unlock()
 
-	if !lt.IsZero() && time.Since(lt) <= multiWindow {
-		// No commands queued -> empty array signifies successful empty transaction
-		return h.writer.WriteEmptyArray()
-	}
+	// if !lt.IsZero() && time.Since(lt) <= multiWindow {
+	// 	// No commands queued -> empty array signifies successful empty transaction
+	// 	return h.writer.WriteEmptyArray()
+	// }
 
 	return h.writer.WriteError("ERR EXEC without MULTI")
 }

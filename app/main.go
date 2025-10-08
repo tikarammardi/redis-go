@@ -58,7 +58,13 @@ func (s *RedisServer) Stop() error {
 }
 
 func (s *RedisServer) handleConnection(conn net.Conn) {
-	defer conn.Close()
+	defer func() {
+		// Clean up transaction state when connection closes
+		if processor, ok := s.processor.(*RedisCommandProcessor); ok {
+			processor.CleanupConnection(conn)
+		}
+		conn.Close()
+	}()
 
 	for {
 		buf := make([]byte, 1024)

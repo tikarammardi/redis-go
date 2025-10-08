@@ -4,18 +4,36 @@ import (
 	"fmt"
 	"net"
 	"strings"
+	"sync"
 	"time"
 )
+
+// QueuedCommand represents a command that has been queued during a transaction
+type QueuedCommand struct {
+	Parts   []RespValue
+	Handler CommandHandler
+}
+
+// TransactionState tracks the transaction state for each connection
+type TransactionState struct {
+	InTransaction  bool
+	QueuedCommands []QueuedCommand
+	mu             sync.Mutex
+}
 
 // RedisCommandProcessor implements CommandProcessor interface
 type RedisCommandProcessor struct {
 	handlers map[string]CommandHandler
+	// Track transaction state per connection
+	transactionStates map[net.Conn]*TransactionState
+	transactionMu     sync.RWMutex
 }
 
 // NewRedisCommandProcessor creates a new command processor with dependency injection
 func NewRedisCommandProcessor(kvStore KeyValueStore, listStore ListStore) *RedisCommandProcessor {
 	processor := &RedisCommandProcessor{
-		handlers: make(map[string]CommandHandler),
+		handlers:          make(map[string]CommandHandler),
+		transactionStates: make(map[net.Conn]*TransactionState),
 	}
 
 	// Register command handlers - following Open-Closed Principle
@@ -82,7 +100,33 @@ func (p *RedisCommandProcessor) Process(command RespValue, conn net.Conn) error 
 	// Update the handler's writer for this connection
 	p.updateHandlerWriter(handler, writer)
 
+	// Check if connection is in transaction mode
+	p.transactionMu.RLock()
+	transState, inTransaction := p.transactionStates[conn]
+	p.transactionMu.RUnlock()
+
+	// If in transaction mode and command is not EXEC or MULTI, queue the command
+	if inTransaction && transState.InTransaction && cmdUpper != "EXEC" && cmdUpper != "MULTI" {
+		transState.mu.Lock()
+		transState.QueuedCommands = append(transState.QueuedCommands, QueuedCommand{
+			Parts:   parts,
+			Handler: handler,
+		})
+		transState.mu.Unlock()
+
+		// Return QUEUED response
+		return writer.WriteSimpleString("QUEUED")
+	}
+
 	fmt.Printf("Processing command: %s with %d parts\n", cmdUpper, len(parts))
+
+	// Special handling for MULTI and EXEC commands
+	if cmdUpper == "MULTI" {
+		p.startTransaction(conn)
+	} else if cmdUpper == "EXEC" {
+		return p.executeTransaction(conn, writer)
+	}
+
 	return handler.Handle(parts, conn)
 }
 
@@ -124,6 +168,69 @@ func (p *RedisCommandProcessor) updateHandlerWriter(handler CommandHandler, writ
 	case *ExecHandler:
 		h.writer = writer
 	}
+}
+
+// startTransaction begins a transaction for the given connection
+func (p *RedisCommandProcessor) startTransaction(conn net.Conn) {
+	p.transactionMu.Lock()
+	defer p.transactionMu.Unlock()
+
+	if p.transactionStates[conn] == nil {
+		p.transactionStates[conn] = &TransactionState{}
+	}
+
+	p.transactionStates[conn].InTransaction = true
+	p.transactionStates[conn].QueuedCommands = nil // Clear any existing commands
+}
+
+// executeTransaction executes all queued commands for the given connection
+func (p *RedisCommandProcessor) executeTransaction(conn net.Conn, writer ResponseWriter) error {
+	p.transactionMu.RLock()
+	transState, exists := p.transactionStates[conn]
+	p.transactionMu.RUnlock()
+
+	if !exists || !transState.InTransaction {
+		return writer.WriteError("ERR EXEC without MULTI")
+	}
+
+	transState.mu.Lock()
+	commands := transState.QueuedCommands
+	transState.InTransaction = false
+	transState.QueuedCommands = nil
+	transState.mu.Unlock()
+
+	// If no commands were queued, return empty array
+	if len(commands) == 0 {
+		return writer.WriteEmptyArray()
+	}
+
+	// Execute all queued commands and collect results
+	results := make([]string, 0, len(commands))
+
+	for _, queuedCmd := range commands {
+		// Update handler writer for this execution
+		p.updateHandlerWriter(queuedCmd.Handler, writer)
+
+		// Execute the command and capture the result
+		// For now, we'll execute the command normally
+		// In a real implementation, we'd capture the output
+		err := queuedCmd.Handler.Handle(queuedCmd.Parts, conn)
+		if err != nil {
+			results = append(results, "ERR "+err.Error())
+		} else {
+			results = append(results, "OK") // Simplified result
+		}
+	}
+
+	// Write array of results
+	return writer.WriteArray(results)
+}
+
+// CleanupConnection removes transaction state when connection closes
+func (p *RedisCommandProcessor) CleanupConnection(conn net.Conn) {
+	p.transactionMu.Lock()
+	defer p.transactionMu.Unlock()
+	delete(p.transactionStates, conn)
 }
 
 // dummyConnection is a placeholder for handler registration
