@@ -1224,3 +1224,29 @@ func (h *ExecHandler) Handle(parts []RespValue, conn net.Conn) error {
 	// If we reach here, it means EXEC was called without proper transaction context
 	return h.writer.WriteError("ERR EXEC without MULTI")
 }
+
+type DiscardHandler struct {
+	store     KeyValueStore
+	writer    ResponseWriter
+	processor *RedisCommandProcessor
+}
+
+func NewDiscardHandler(store KeyValueStore, writer ResponseWriter) *DiscardHandler {
+	return &DiscardHandler{store: store, writer: writer}
+}
+
+// SetProcessor allows the command processor to be injected
+func (h *DiscardHandler) SetProcessor(processor *RedisCommandProcessor) {
+	h.processor = processor
+}
+
+func (h *DiscardHandler) Handle(parts []RespValue, conn net.Conn) error {
+	if len(parts) != 1 {
+		return h.writer.WriteError(ErrUnknownCommand)
+	}
+
+	// The actual transaction discard is handled by the command processor
+	// This handler should not be called directly for transaction discard
+	// If we reach here, it means DISCARD was called without proper transaction context
+	return h.writer.WriteError("ERR DISCARD without MULTI")
+}

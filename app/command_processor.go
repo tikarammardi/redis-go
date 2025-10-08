@@ -66,6 +66,7 @@ func (p *RedisCommandProcessor) registerHandlers(kvStore KeyValueStore, listStor
 	p.handlers["INCR"] = NewIncrHandler(kvStore, writer)
 	p.handlers["MULTI"] = NewMultiHandler(kvStore, writer)
 	p.handlers["EXEC"] = NewExecHandler(kvStore, writer)
+	p.handlers["DISCARD"] = NewDiscardHandler(kvStore, writer)
 }
 
 func (p *RedisCommandProcessor) Process(command RespValue, conn net.Conn) error {
@@ -105,8 +106,8 @@ func (p *RedisCommandProcessor) Process(command RespValue, conn net.Conn) error 
 	transState, inTransaction := p.transactionStates[conn]
 	p.transactionMu.RUnlock()
 
-	// If in transaction mode and command is not EXEC or MULTI, queue the command
-	if inTransaction && transState.InTransaction && cmdUpper != "EXEC" && cmdUpper != "MULTI" {
+	// If in transaction mode and command is not EXEC, MULTI, or DISCARD, queue the command
+	if inTransaction && transState.InTransaction && cmdUpper != "EXEC" && cmdUpper != "MULTI" && cmdUpper != "DISCARD" {
 		transState.mu.Lock()
 		transState.QueuedCommands = append(transState.QueuedCommands, QueuedCommand{
 			Parts:   parts,
@@ -120,11 +121,13 @@ func (p *RedisCommandProcessor) Process(command RespValue, conn net.Conn) error 
 
 	fmt.Printf("Processing command: %s with %d parts\n", cmdUpper, len(parts))
 
-	// Special handling for MULTI and EXEC commands
+	// Special handling for MULTI, EXEC, and DISCARD commands
 	if cmdUpper == "MULTI" {
 		p.startTransaction(conn)
 	} else if cmdUpper == "EXEC" {
 		return p.executeTransaction(conn, writer)
+	} else if cmdUpper == "DISCARD" {
+		return p.discardTransaction(conn, writer)
 	}
 
 	return handler.Handle(parts, conn)
@@ -166,6 +169,8 @@ func (p *RedisCommandProcessor) updateHandlerWriter(handler CommandHandler, writ
 	case *MultiHandler:
 		h.writer = writer
 	case *ExecHandler:
+		h.writer = writer
+	case *DiscardHandler:
 		h.writer = writer
 	}
 }
@@ -230,6 +235,23 @@ func (p *RedisCommandProcessor) executeTransaction(conn net.Conn, writer Respons
 
 	// Write array of captured responses
 	return writer.WriteTransactionResults(results)
+}
+
+// discardTransaction discards the transaction for the given connection
+func (p *RedisCommandProcessor) discardTransaction(conn net.Conn, writer ResponseWriter) error {
+	p.transactionMu.Lock()
+	defer p.transactionMu.Unlock()
+
+	transState, exists := p.transactionStates[conn]
+	if !exists || !transState.InTransaction {
+		return writer.WriteError("ERR DISCARD without MULTI")
+	}
+
+	// Discard the transaction - simply mark it as not in transaction
+	transState.InTransaction = false
+	transState.QueuedCommands = nil // Clear any queued commands
+
+	return writer.WriteSimpleString("OK")
 }
 
 // CleanupConnection removes transaction state when connection closes
