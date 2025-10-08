@@ -1175,3 +1175,20 @@ func (h *IncrHandler) Handle(parts []RespValue, conn net.Conn) error {
 
 	return h.writer.WriteInteger(intValue)
 }
+
+type MultiHandler struct {
+	store  KeyValueStore
+	writer ResponseWriter
+}
+
+func NewMultiHandler(store KeyValueStore, writer ResponseWriter) *MultiHandler {
+	return &MultiHandler{store: store, writer: writer}
+}
+
+func (h *MultiHandler) Handle(parts []RespValue, conn net.Conn) error {
+	if len(parts) != 1 {
+		return h.writer.WriteError(ErrUnknownCommand)
+	}
+
+	return h.writer.WriteSimpleString("OK")
+}

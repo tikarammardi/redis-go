@@ -46,6 +46,7 @@ func (p *RedisCommandProcessor) registerHandlers(kvStore KeyValueStore, listStor
 	p.handlers["XRANGE"] = NewXRangeHandler(kvStore, writer)
 	p.handlers["XREAD"] = NewXReadHandler(kvStore, writer)
 	p.handlers["INCR"] = NewIncrHandler(kvStore, writer)
+	p.handlers["MULTI"] = NewMultiHandler(kvStore, writer)
 }
 
 func (p *RedisCommandProcessor) Process(command RespValue, conn net.Conn) error {
@@ -116,6 +117,8 @@ func (p *RedisCommandProcessor) updateHandlerWriter(handler CommandHandler, writ
 	case *XReadHandler:
 		h.writer = writer
 	case *IncrHandler:
+		h.writer = writer
+	case *MultiHandler:
 		h.writer = writer
 	}
 }
