@@ -17,13 +17,16 @@ type RedisServer struct {
 }
 
 // NewRedisServer creates a new Redis server with dependency injection
-func NewRedisServer() *RedisServer {
+func NewRedisServer(port int) *RedisServer {
 	// Create stores
 	kvStore := NewInMemoryKeyValueStore()
 	listStore := NewInMemoryListStore()
 
 	// Create command processor with dependency injection
 	processor := NewRedisCommandProcessor(kvStore, listStore)
+
+	// Configure the port for handlers that need it
+	processor.SetPort(port)
 
 	return &RedisServer{
 		processor: processor,
@@ -105,7 +108,7 @@ func main() {
 	flag.Parse()
 
 	// Create and start the server
-	server := NewRedisServer()
+	server := NewRedisServer(port)
 
 	address := "0.0.0.0:" + strconv.Itoa(port)
 	err := server.Start(address)

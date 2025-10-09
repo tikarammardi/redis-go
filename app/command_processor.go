@@ -67,6 +67,7 @@ func (p *RedisCommandProcessor) registerHandlers(kvStore KeyValueStore, listStor
 	p.handlers["MULTI"] = NewMultiHandler(kvStore, writer)
 	p.handlers["EXEC"] = NewExecHandler(kvStore, writer)
 	p.handlers["DISCARD"] = NewDiscardHandler(kvStore, writer)
+	p.handlers["INFO"] = NewInfoHandler(kvStore, writer)
 }
 
 func (p *RedisCommandProcessor) Process(command RespValue, conn net.Conn) error {
@@ -172,6 +173,15 @@ func (p *RedisCommandProcessor) updateHandlerWriter(handler CommandHandler, writ
 		h.writer = writer
 	case *DiscardHandler:
 		h.writer = writer
+	case *InfoHandler:
+		h.writer = writer
+	}
+}
+
+// SetPort configures the port for handlers that need it (like INFO)
+func (p *RedisCommandProcessor) SetPort(port int) {
+	if infoHandler, ok := p.handlers["INFO"].(*InfoHandler); ok {
+		infoHandler.SetPort(port)
 	}
 }
 

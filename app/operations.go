@@ -1250,3 +1250,113 @@ func (h *DiscardHandler) Handle(parts []RespValue, conn net.Conn) error {
 	// If we reach here, it means DISCARD was called without proper transaction context
 	return h.writer.WriteError("ERR DISCARD without MULTI")
 }
+
+type InfoHandler struct {
+	store  KeyValueStore
+	writer ResponseWriter
+	port   int // Add port field to track the actual server port
+}
+
+func NewInfoHandler(store KeyValueStore, writer ResponseWriter) *InfoHandler {
+	return &InfoHandler{store: store, writer: writer, port: 6379} // Default port
+}
+
+// SetPort allows setting the actual port the server is running on
+func (h *InfoHandler) SetPort(port int) {
+	h.port = port
+}
+
+func (h *InfoHandler) Handle(parts []RespValue, conn net.Conn) error {
+
+	if len(parts) < 1 || len(parts) > 2 {
+		return h.writer.WriteError(ErrUnknownCommand)
+	}
+
+	var section string
+	if len(parts) == 2 {
+		sectionValue, ok := parts[1].Value.(string)
+		if !ok {
+			return h.writer.WriteError(ErrUnknownCommand)
+		}
+		section = strings.ToLower(sectionValue)
+	}
+
+	var info string
+
+	// If no section specified or section is "all", return all sections
+	if section == "" || section == "all" {
+		info = "# Server\r\n" +
+			"redis_version:6.0.0\r\n" +
+			"redis_git_sha1:00000000\r\n" +
+			"redis_git_dirty:0\r\n" +
+			"redis_build_id:0000000000000000000000000000000000000000\r\n" +
+			"redis_mode:standalone\r\n" +
+			"os:linux\r\n" +
+			"arch_bits:64\r\n" +
+			"multiplexing_api:epoll\r\n" +
+			"gcc_version:9.3.0\r\n" +
+			"process_id:1\r\n" +
+			"run_id:0000000000000000000000000000000000000000\r\n" +
+			"tcp_port:" + strconv.Itoa(h.port) + "\r\n" +
+			"uptime_in_seconds:3600\r\n" +
+			"uptime_in_days:0\r\n" +
+			"\r\n" +
+			"# Clients\r\n" +
+			"connected_clients:1\r\n" +
+			"client_recent_max_input_buffer:2\r\n" +
+			"client_recent_max_output_buffer:0\r\n" +
+			"blocked_clients:0\r\n" +
+			"\r\n" +
+			"# Memory\r\n" +
+			"used_memory:1024000\r\n" +
+			"used_memory_human:1000K\r\n" +
+			"used_memory_rss:2048000\r\n" +
+			"used_memory_peak:3072000\r\n" +
+			"used_memory_peak_human:3000K\r\n" +
+			"used_memory_lua:37888\r\n" +
+			"\r\n" +
+			"# Persistence\r\n" +
+			"loading:0\r\n" +
+			"\r\n" +
+			"# Stats\r\n" +
+			"total_connections_received:10\r\n" +
+			"total_commands_processed:100\r\n" +
+			"instantaneous_ops_per_sec:5\r\n" +
+			"total_net_input_bytes:2048\r\n" +
+			"total_net_output_bytes:4096\r\n" +
+			"\r\n" +
+			"# Replication\r\n" +
+			"role:master\r\n" +
+			"\r\n" +
+			"# CPU\r\n" +
+			"used_cpu_sys:0.1\r\n" +
+			"used_cpu_user:0.2\r\n" +
+			"\r\n" +
+			"# Keyspace\r\n" +
+			"db0:keys=10,expires=0,avg_ttl=0\r\n"
+	} else if section == "replication" {
+		info = "# Replication\r\n" +
+			"role:master\r\n"
+	} else if section == "server" {
+		info = "# Server\r\n" +
+			"redis_version:6.0.0\r\n" +
+			"redis_git_sha1:00000000\r\n" +
+			"redis_git_dirty:0\r\n" +
+			"redis_build_id:0000000000000000000000000000000000000000\r\n" +
+			"redis_mode:standalone\r\n" +
+			"os:linux\r\n" +
+			"arch_bits:64\r\n" +
+			"multiplexing_api:epoll\r\n" +
+			"gcc_version:9.3.0\r\n" +
+			"process_id:1\r\n" +
+			"run_id:0000000000000000000000000000000000000000\r\n" +
+			"tcp_port:" + strconv.Itoa(h.port) + "\r\n" +
+			"uptime_in_seconds:3600\r\n" +
+			"uptime_in_days:0\r\n"
+	} else {
+		// For unknown sections, return empty response (Redis behavior)
+		info = ""
+	}
+
+	return h.writer.WriteBulkString(info)
+}
