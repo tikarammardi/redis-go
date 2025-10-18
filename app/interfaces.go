@@ -3,6 +3,8 @@ package main
 import (
 	"net"
 	"time"
+
+	"github.com/codecrafters-io/redis-starter-go/app/resp"
 )
 
 // CommandHandler interface following Single Responsibility Principle
@@ -35,8 +37,7 @@ type ResponseWriter interface {
 	WriteNullBulkString() error
 	WriteNullArray() error
 	WriteEmptyArray() error
-	WriteStreamEntries(entries []StreamEntry) error
-	WriteStreamReadResults(results []StreamReadResult) error
+	WriteStreamEntries(entries []resp.StreamEntry) error
 	WriteTransactionResults(results []RespValue) error
 }
 

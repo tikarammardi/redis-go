@@ -1,6 +1,7 @@
 package main
 
 import (
+	"github.com/codecrafters-io/redis-starter-go/app/store"
 	"sync"
 	"time"
 )
@@ -18,14 +19,16 @@ func (i *Item) IsExpired() bool {
 
 // InMemoryKeyValueStore implements KeyValueStore interface
 type InMemoryKeyValueStore struct {
-	store map[string]Item
-	mutex sync.RWMutex
+	store          map[string]Item
+	mutex          sync.RWMutex
+	streamNotifier *store.StreamNotifier
 }
 
 // NewInMemoryKeyValueStore creates a new in-memory key-value store
 func NewInMemoryKeyValueStore() *InMemoryKeyValueStore {
 	return &InMemoryKeyValueStore{
-		store: make(map[string]Item),
+		store:          make(map[string]Item),
+		streamNotifier: store.NewStreamNotifier(),
 	}
 }
 
@@ -68,6 +71,11 @@ func (s *InMemoryKeyValueStore) Delete(key string) error {
 	defer s.mutex.Unlock()
 	delete(s.store, key)
 	return nil
+}
+
+// GetStreamNotifier returns the stream notifier for this store
+func (s *InMemoryKeyValueStore) GetStreamNotifier() *store.StreamNotifier {
+	return s.streamNotifier
 }
 
 // ListNode represents a node in a doubly linked list
